@@ -48,6 +48,8 @@ npm run demo
 
 ## 在 M 系列 Mac 上为 Intel Mac 打包
 
+通用版合并使用 Apple 的 `lipo` 命令。构建那台 Mac 如果尚未安装 Apple Command Line Tools，先运行 `xcode-select --install`；无需安装完整 Xcode，也无需付费开发者会员。部署目标电脑不需要这些构建工具。
+
 ```sh
 npm ci
 npm run package:mac
