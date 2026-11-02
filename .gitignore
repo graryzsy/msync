@@ -1,11 +1,14 @@
-.build/
-.swiftpm/
 .DS_Store
 dist/
+release/
 node_modules/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 .env
-*.xcuserstate
+.env.*
+*.enc
 artifacts/
+playwright-report/
+test-results/
+coverage/

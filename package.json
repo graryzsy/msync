@@ -1,0 +1,47 @@
+{
+  "name": "msync",
+  "version": "0.2.0",
+  "description": "Cross-platform music collection sync for Spotify, Apple Music and NetEase",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.js",
+  "author": "MSync contributors",
+  "license": "UNLICENSED",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build": "npm run typecheck && npm run build:main && vite build",
+    "start": "electron .",
+    "test": "node scripts/test.mjs",
+    "test:ui": "playwright test",
+    "demo": "tsx src/cli.ts demo",
+    "package:mac": "npm run build && electron-builder --mac dmg zip --universal --publish never",
+    "package:mac:x64": "npm run build && electron-builder --mac dmg zip --x64 --publish never",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "package:linux": "npm run build && electron-builder --linux AppImage --x64 --publish never",
+    "package:dir": "npm run build && electron-builder --dir --publish never"
+  },
+  "dependencies": {
+    "@neteasecloudmusicapienhanced/api": "4.41.1",
+    "lucide-react": "1.66.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "sql.js": "1.15.2",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/sql.js": "1.4.11",
+    "@vitejs/plugin-react": "6.1.2",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}

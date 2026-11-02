@@ -1,116 +1,142 @@
 # MSync
 
-macOS 15 个人音乐收藏同步工具的首版实现。主体为 **Swift + SwiftUI**，网易云接入为 **TypeScript + Node.js**，本地状态保存在 SQLite。
+**TypeScript + Electron + React** 编写的音乐收藏同步桌面应用。macOS、Windows、Linux 共享界面、同步核心与平台适配器。SQLite 使用 WebAssembly 实现，没有需要针对 CPU 架构重新编译的数据库插件。
 
-以 Spotify 建立初始基线；已经确认对应关系的收藏可由任意可读平台发起新增或取消。专辑、艺人、歌曲分别处理。第一版采用手动“扫描 → 核实对应版本 → 查看预览 → 执行同步”，没有后台无人值守任务。
+以 Spotify 作为首次基准；对已确认对应关系的收藏，识别并传播实际观察到的新增与取消。歌曲点赞、专辑收藏、艺人关注分别记录，保留发行版本与完整发行日期的严格约束。
 
-## 当前能力与边界
+当前版本已移除 Swift 工程与 SwiftUI 界面。构建业务代码无需 Swift、Xcode 或付费 Apple Developer 会员。安装包自带 Electron/Node 运行时，**部署电脑无需额外安装 Node.js**。
 
-| 平台 | 歌曲 | 专辑 | 艺人 |
-| --- | --- | --- | --- |
-| Spotify | 官方接口读取、搜索、增删喜欢 | 官方接口读取、搜索、增删收藏 | 官方接口读取、搜索、关注/取消关注 |
-| 网易云音乐 | 社区接口读取、搜索、红心增删 | 社区接口读取、搜索、收藏增删 | 社区接口读取、搜索、收藏增删 |
-| Apple Music | Music.app 资料库内喜爱状态的读取、查找、设置 | Music.app 资料库内专辑星标的读取、查找、设置 | **未实现自动读取和写入**；界面明确显示待处理原因 |
+## 平台接入的实际能力
 
-**Apple Music 不使用 MusicKit 开发者令牌，不需要付费开发者会员。** 它通过 macOS 自带的 JavaScript for Automation（AppleScript 同一套 Apple Events 机制）控制 Music.app，不读取 Apple 账户密码、Cookie 或客户端私有数据库。
+| 平台与模式 | 读取 / 查找 | 添加与取消 |
+| --- | --- | --- |
+| Spotify（所有系统） | 官方 API：歌曲、专辑、艺人 | 官方 API |
+| 网易云（所有系统） | 社区接口：歌曲、专辑、艺人 | 社区接口 |
+| Apple Music 本机模式（macOS） | Music.app 资料库内歌曲、专辑的喜爱星标 | 使用 macOS 自带 JXA / Apple Events 设置星标 |
+| Apple Music 网页确认（所有系统） | 仅记录用户逐项核实的网页条目和状态 | 在系统浏览器操作，再回到软件确认 |
 
-该方案有实际能力限制：
+Apple Music 不使用开发者令牌或借用第三方令牌。macOS 本机模式通过系统自带的 JavaScript for Automation 控制 Music.app，代码也是 JavaScript，不含 Swift。艺人完整喜爱列表、资料库外曲目与消失条目无法由该脚本完整覆盖；缺失状态保持未知。
 
-- Apple Music 只对资料库中脚本明确返回的条目确认喜爱状态。资料库外收藏、未能读取的条目、整个条目消失均保持未知，不推断为主动取消收藏。
-- 目标歌曲或专辑尚未在本机资料库时，请先在 Music.app 中找到**对应发行版本**并加入资料库，再回到 MSync 查找对应关系。
-- Apple Music 专辑收藏在本版本中定义为**专辑星标**，不将加入资料库或某一首歌存在于资料库视为收藏整张专辑。
-- 脚本不提供完整艺人喜爱列表，第一版没有假装实现这一能力。跨三个平台的艺人全自动同步仍需后续补足网页/界面接入并在真实 Mac 上验证。
-- Apple Music 账户身份以本机资料库标识隔离，不能可靠识别“同一个资料库内更换云端账户”。更换 Apple 账户后，先导出记录，再通过连接页的“重新建立同步基线”清除旧对应关系。
-- AI 图像辅助尚未接入，本版不调用收费模型接口。匹配模型保留完整证据和人工确认入口，后续 AI 只能提供候选和证据，不能直接授权删除。
+Windows、Linux 没有本机 Music.app 接口，因此提供明确标记的网页确认流程。**当前没有实现 Apple Music 网页全自动读取或点击**，也不会将手动记录伪装成实时云端状态。全自动三平台同步的 Apple Music 接入仍有上述限制。
 
-SwiftUI、钥匙串、Music.app Apple Events、扫码登录和真实账户读写均需要 macOS 15 与本人账户实测。Linux 上可构建共享模块、运行离线命令行示例与自动化测试；Linux 上编译的桌面入口仅说明平台要求。
+## 开发与运行
 
-## 在 Mac 上运行
-
-需要 macOS 15、Xcode 16（Swift 6）或更新版本，以及 Node.js 22+（启用网易云时）。使用免费 Xcode 工具即可构建；不需要 App Store 发布或付费开发者会员。
+构建电脑安装 **Node.js 24 LTS**（最低 22.12）和 Git；三个系统的命令一致：
 
 ```sh
-cd /你的目录/msync
-cd Companion
-npm ci --ignore-scripts --no-audit --no-fund
+git clone --branch develop https://github.com/graryzsy/msync.git
+cd msync
+npm ci
+npm test
 npm run build
-cd ..
-bash scripts/build-app.sh --with-companion
-open dist/MSync.app
+npm start
 ```
 
-推荐从 `.app` 启动，确保系统能读取其中的 `NSAppleEventsUsageDescription`。也可 `swift run MSync` 调试，但 macOS 可能将自动化授权归于启动它的终端或 Xcode。
-
-打包脚本生成本机架构的 `.app` 并作 ad-hoc 本地签名。它不上传应用、不申请公证，也不访问付费开发者服务。`--with-companion` 将网易云辅助模块加入应用，**不会打包 Node 运行时**；连接设置中填写本机 Node 的完整路径，例如 `/opt/homebrew/bin/node` 或 `/usr/local/bin/node`。不传该参数也能构建主应用，但网易云需要另行指定已构建的辅助模块路径。
-
-### 连接与首次同步
-
-1. **Spotify**：在 [Developer Dashboard](https://developer.spotify.com/dashboard) 创建个人应用，将回调地址设为 `http://127.0.0.1:19428/callback`；在 MSync 连接页填写 Client ID，点击连接。使用 PKCE，不需要在软件里保存 Client Secret。
-2. **Apple Music**：先打开 Music.app，等待资料库同步完成；在连接页启用本机接入。首次扫描时允许 MSync 控制音乐 App。系统设置 → 隐私与安全性 → 自动化中可以检查该权限。
-3. **网易云**：检查 Node 与 `Companion/dist/bridge.js` 路径，生成二维码，用网易云 App 扫码确认，再点击“检查登录”。Cookie 经标准输入传给辅助进程，不出现在进程参数或日志里。
-4. 扫描收藏，在“收藏”中选择条目并查找另一平台的对应版本。逐项核实日期、所属发行版本和艺人，填写证据，再保存对应关系。可以先确认 Spotify ↔ Apple Music，再为同一 Spotify 条目增加网易云，系统会扩展成三平台对应关系。
-5. 再次扫描，在“同步预览”中核对操作。执行前会再次检查账户和相关收藏状态；状态变化时旧预览会被拒绝。
-6. 第一次以 Spotify 状态对齐**已经确认的对应关系**；其他未映射收藏保留，不会自动清空。执行“记录本次基线”后，之后的真实新增/取消才可根据历史判断。
-
-Apple Music 能力的只读检查（输出属性与数量，不修改收藏）：
+开发模式使用 Vite 页面热更新；主进程改动后重新启动：
 
 ```sh
-bash scripts/probe-apple-music.sh
+npm run dev
 ```
 
-## 严格的歌曲身份
+首页有“体验离线演示”，使用独立的内存数据库与模拟平台，不连接真实账户。进入“同步预览”，可以模拟 Apple Music 取消第一首歌曲的收藏，查看另外两平台的取消操作并执行，再模拟重新收藏。退出演示后回到原来的个人记录。
 
-内部实体为“某一发行版本中的曲目”。同 ISRC、同封面或同名都不足以确认相同：
-
-- 原专辑、精选集、单曲发行分别处理。
-- 所属发行名称、版本标记与完整 `YYYY-MM-DD` 必须核实一致。
-- 年份或年月不会补成完整日期；缺失日期可以由用户在查证后补充，并必须保存证据。
-- 日期冲突、曲序冲突、ISRC 冲突不会自动合并；艺人同名始终需要人工确认身份。
-- 大小写、空白与 Unicode 兼容形式可规范化，Live、Deluxe、Remastered 等版本信息保留。
-- 网易云使用**所属专辑**的 `publishTime`，按该平台的中国标准时间日历解释；不将歌曲最早发行时间当成当前专辑日期。
-
-匹配器的 `compatible` 仅表示没有发现规则冲突，不会自动将候选标记为已核实。没有证据和确认的对应关系不进入同步计划。
-
-## 状态与恢复
-
-- SQLite 同一事务持久化快照、目标状态、待执行操作和日志。删除目标会持久保存，离线平台回来时不会仅因保留旧收藏而把条目复活。
-- 只有完整列表的缺失，或条目明确返回未收藏，才能推断移除。读取失败、限流、缺页、未知状态均不当作空收藏。
-- 预览是只读操作；执行后才记录本次观察到的意图。远程写入成功后必须回读目标状态再确认本地完成。
-- 部分操作失败会保留目标意图和待处理记录。重新扫描、查看新预览后可以继续；不要直接重复执行旧预览。
-- 有相反变化且 Spotify 本身有变化时，以 Spotify 这次变化为准。只有其他两平台相互冲突时等待人工处理；不把扫描顺序当作用户操作时间。
-- 账户/资料库 ID 变化时拒绝沿用旧基线。可以导出后通过连接页重新建立本地基线，平台收藏不会被重置。
-- 平台之间没有跨服务事务；实时并发操作或在两次扫描之间完成的反复操作无法全部还原。首版以已观察状态实现最终一致。
-
-数据位于 `~/Library/Application Support/MSync/state.sqlite`；登录凭据放在 macOS 钥匙串。导出 JSON 包含收藏、对应关系与历史，不包含登录凭据。导出文件目前用于备份和人工查看，尚无界面导入恢复功能。
-
-## 开发验证
+命令行离线示例：
 
 ```sh
-swift test
-swift run msync demo
-cd Companion && npm test
+npm run demo
 ```
 
-`msync demo` 完全离线，展示 Apple Music 取消收藏后生成另外两平台取消操作，不连接也不修改真实账户。`msync plan input.json [state.sqlite]` 可离线生成 JSON 预览；输入为 `{ "mappings": [...], "snapshots": [...] }`，结构见 `Sources/MSyncCore/Models.swift`。`msync inspect state.sqlite` 只读取本地记录。
+## 在 M 系列 Mac 上为 Intel Mac 打包
 
-`.github/workflows/ci.yml` 配置了 macOS 15 原生构建/测试/打包，以及 Node 辅助模块的构建/测试。工作流需要代码推送到 GitHub 后才会运行；仓库中的配置不代表远程检查已经通过。
+```sh
+npm ci
+npm run package:mac
+```
 
-## 目录
+Universal 通用版同时包含 `arm64` 与 `x86_64`，可分别部署到 M 系列 macOS 26 和 Intel macOS 15。应用声明最低 macOS **15.0**。只需要 Intel 版本时：
+
+```sh
+npm run package:mac:x64
+```
+
+产物在 `release/`。将 `.zip` 中完整的 `MSync.app` 或 `.dmg` 中的应用复制到目标电脑。在 M 系列 Mac 构建不代表已经在 Intel macOS 15 运行验证；目标机器仍应检查启动、Music.app 自动化、钥匙串和真实账户读写。
+
+Mac 构建使用个人本地 ad-hoc 签名，不申请付费 Developer ID，也不公证。目标电脑若被 Gatekeeper 拦截，需要在系统设置中确认你自己构建的应用；此配置不代表 App Store 或公开分发所需的签名与公证已经完成。
+
+## Windows 与 Linux 打包
+
+建议在相应系统构建与测试：
+
+```sh
+# Windows x64：NSIS 安装程序
+npm run package:win
+
+# Linux x64：AppImage
+npm run package:linux
+
+# 当前系统的应用目录，用于本机验证
+npm run package:dir
+```
+
+三个系统不共用同一个安装包，但共享 TypeScript 业务代码。GitHub Actions 配置 Windows、Linux、macOS 的测试、桌面集成检查和打包；macOS 作业构建 Universal `.zip`。是否通过以工作流的实际运行结果为准。
+
+## 首次使用
+
+1. **Spotify**：在 [Developer Dashboard](https://developer.spotify.com/dashboard) 创建个人应用，回调地址设为 `http://127.0.0.1:19428/callback`。设置页填写 Client ID 并连接；采用浏览器授权和 PKCE，不保存 Client Secret。
+2. **网易云**：在设置页生成二维码，使用手机网易云 App 扫码并确认，再检查登录状态。社区接口可能受限流、登录过期或协议变化影响。
+3. **Apple Music / Mac 本机模式**：先打开 Music.app 并完成资料库同步，选择本机模式，允许 MSync 控制音乐 App。歌曲与专辑按喜爱星标同步，加入资料库不视为点赞或收藏整张专辑。
+4. **Apple Music / 网页确认模式**：在浏览器登录 Apple Music，在软件的“网页确认”页登记链接、艺人、所属发行、完整日期并确认状态。歌曲专辑页面链接应包含 `?i=曲目ID`，也支持 `/song/…/ID` 页面。
+5. 扫描收藏，从条目详情查找对应版本，核实后填写证据。可以先建立两平台关系，再为同一 Spotify 条目增加第三个平台。
+6. 查看预览后执行。首次以 Spotify 状态对齐已确认关系；未映射收藏保留。记录基线后才能通过历史判断主动取消。
+
+网页模式下，Apple Music 待同步操作生成附平台页面链接的人工待办。请在网页完成后确认状态，再重新扫描。也可以主动在网页确认页记录取消，让下一次同步将取消传播到其他平台。
+
+更换 Apple 账户、Music 资料库或切换本机/网页模式后，先导出记录，再重新建立本地基线。本机模式无法可靠识别同一资料库内更换云端 Apple 账户的情况。
+
+## 身份匹配与删除传播
+
+- 对象是具体发行版本中的曲目，原专辑、精选集、单曲、豪华版与重制版分别处理。
+- 同 ISRC、同名、同封面不足以判定相同；完整发行年月日必须核实一致。只有年份或年月时不补成完整日期。
+- 规范化大小写、空白和 Unicode 兼容形式，保留版本文字。不同发行名称保守拒绝；翻译、别名或平台元数据问题可能需要补充证据或后续扩展。
+- 艺人同名始终需要确认。“信息一致”只代表候选，没有自动赋予已核实状态。
+- 可靠的完整列表缺失或明确未收藏才允许推断取消；读取失败、分页失败、未知状态不作为空列表。
+- 预览不写入基线；执行前重新读取状态，拒绝过期预览。先持久化目标与待办，再执行远程操作，回读确认后标记完成。
+- 删除目标持久保存；离线平台恢复时不会仅凭旧收藏复活条目。真正观察到的后续新增可以重新收藏。
+- 失败保留意图，可重新扫描继续。相反操作仅在 Spotify 本身有主动变更时优先采用它；其他冲突等待处理。
+- 平台间没有统一事务，轮询无法还原全部中间操作；当前以观察到的状态实现最终一致。
+
+AI 图像辅助尚未接入，不调用收费模型。后续 AI 只能提供候选和可检查的证据，不能放宽日期条件或直接授权删除。
+
+## 数据与安全存储
+
+收藏、映射、历史和删除目标位于 `collections.sqlite`，是标准 SQLite 文件。写入先完成临时文件与 fsync，再替换目标；发现其他进程修改时拒绝覆盖。Electron 限制同一用户目录的多实例运行。
+
+凭据通过 Electron `safeStorage` 调用 macOS 钥匙串、Windows 系统加密或 Linux 密钥环，写入 `credentials.enc`。Linux 缺少密钥环或使用 `basic_text` 后端时，**只在内存保留本次登录，不保存明文凭据**。
+
+界面通过隔离 preload 与白名单 IPC 调用服务，没有 Node.js 访问能力，也不会收到 Token/Cookie。外部链接限制为受支持音乐平台的 HTTPS 页面。
+
+备份包含对应关系与历史，不包含凭据；另一电脑导入后需单独登录。导入不直接执行备份中的未完成写入。旧版导出的 JSON 也可导入，**不会自动读取旧钥匙串或覆盖旧 `state.sqlite`**。网页确认记录位于 `apple-web.json`，目前不包含在历史备份中，迁移到另一台电脑后应重新核实。
+
+默认用户目录：macOS 为 `~/Library/Application Support/MSync/`，Windows 为 `%APPDATA%/MSync/`，Linux 为 `~/.config/MSync/`（受 XDG 配置影响）。
+
+## 验证与结构
+
+```sh
+npm run typecheck
+npm test
+npm run build
+npm run test:ui
+```
+
+界面测试使用项目中的 Electron，无需另行下载 Playwright 浏览器。测试使用独立临时目录和离线演示；Linux 使用无显示器的 Ozone 后端。设置 `MSYNC_ELECTRON_EXECUTABLE` 可对已打包应用运行相同的桌面测试。
 
 ```text
-Sources/MSyncCore/       发行身份、匹配、同步计划、SQLite、协调执行
-Sources/MSyncAdapters/   Spotify API/PKCE、Music.app 脚本、网易云进程桥
-Sources/MSyncApp/        SwiftUI 界面、钥匙串、浏览器授权回调
-Sources/MSyncCLI/        离线预览与演示
-Companion/              网易云 TypeScript 辅助模块及锁定依赖
-Tests/                  版本匹配、删除传播、持久化、授权及故障测试
-scripts/                Mac 打包和 Music.app 只读能力检查
+src/core/        共享模型、严格匹配、计划、SQLite 与执行协调
+src/adapters/    Spotify / 网易云 / Apple Music 接入
+src/main/        Electron 主进程、安全存储、白名单 IPC
+src/renderer/    React 界面
+src/shared/      界面与主进程接口
+resources/      可选 macOS Music.app JavaScript 脚本
+tests/          规则、持久化、授权、适配器与安全边界测试
+e2e/            真实 Electron 桌面流程测试
 ```
-
-## 参考
-
-- [Spotify 当前开发模式迁移说明](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)
-- [Spotify 统一收藏写入接口](https://developer.spotify.com/documentation/web-api/reference/save-library-items)
-- [网易云社区接口库](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)
-
-当前实现是个人使用的首版，不宣称已经完成三平台所有收藏类别的无人值守同步。

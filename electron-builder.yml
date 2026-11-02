@@ -1,0 +1,39 @@
+appId: local.msync.app
+productName: MSync
+asar: true
+npmRebuild: false
+directories:
+  output: release
+files:
+  - dist/**
+  - package.json
+extraResources:
+  - from: resources/music-bridge.js
+    to: msync-resources/music-bridge.js
+mac:
+  category: public.app-category.music
+  minimumSystemVersion: '15.0'
+  identity: '-'
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  notarize: false
+  extendInfo:
+    NSAppleEventsUsageDescription: MSync 根据你确认的同步预览读取和修改音乐 App 中的歌曲或专辑喜爱标记。
+  target:
+    - target: dmg
+      arch: [universal]
+    - target: zip
+      arch: [universal]
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+linux:
+  category: AudioVideo
+  target:
+    - target: AppImage
+      arch: [x64]
+publish: null

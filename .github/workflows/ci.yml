@@ -3,24 +3,33 @@ on:
   push:
   pull_request:
 jobs:
-  swift:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Compile native app and run core/adapter tests
-        run: swift test
-      - name: Package personal Mac application
-        run: bash scripts/build-app.sh
-  netease:
-    runs-on: ubuntu-latest
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: npm
-          cache-dependency-path: Companion/package-lock.json
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-        working-directory: Companion
+      - run: npm ci --no-audit --no-fund
       - run: npm test
-        working-directory: Companion
+      - run: npm run build
+      - name: Desktop integration test
+        run: npm run test:ui
+      - name: Package native application directory
+        if: runner.os != 'macOS'
+        run: npx electron-builder --dir --publish never
+      - name: Package Intel and Apple Silicon universal archive
+        if: runner.os == 'macOS'
+        run: npx electron-builder --mac zip --universal --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msync-${{ runner.os }}
+          path: |
+            release/*.zip
+            release/*-unpacked/**
+          if-no-files-found: warn
