@@ -52,3 +52,54 @@ test('desktop demo, strict edition review, deletion propagation and isolated cre
     expect(errors).toEqual([]);
   } finally { await application.close(); rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });
+
+test('QR login shows confirmation and failure inside the dialog and discards expired QR images', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'msync-qr-test-'));
+  const extra = process.platform === 'linux' ? ['--no-sandbox', '--disable-gpu', '--ozone-platform=headless'] : [];
+  const application = await electron.launch({
+    ...(process.env.MSYNC_ELECTRON_EXECUTABLE ? { executablePath: process.env.MSYNC_ELECTRON_EXECUTABLE } : {}),
+    args: [...extra, ...(process.env.MSYNC_ELECTRON_EXECUTABLE ? [] : [resolve('.')])],
+    env: { ...process.env, MSYNC_DATA_DIR: directory, XDG_CACHE_HOME: join(directory, 'cache') }, timeout: 30_000
+  });
+  try {
+    const page = await application.firstWindow();
+    await expect(page.getByRole('heading', { name: '收藏好音乐，不必重复收藏。' })).toBeVisible();
+    const view = await page.evaluate(() => window.msync!.getState());
+    // Replace only the two login handlers in this isolated test process.
+    // Every account response is a fixture; the test makes no NetEase requests.
+    await application.evaluate(({ ipcMain }, state) => {
+      ipcMain.removeHandler('msync:startNeteaseLogin'); ipcMain.removeHandler('msync:checkNeteaseLogin');
+      ipcMain.handle('msync:startNeteaseLogin', () => ({ ok: true, value: {
+        key: 'offline-test-key', image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/jNQAAAAASUVORK5CYII='
+      } }));
+      const codes = [802, 'rejected', 801, 800, 803];
+      ipcMain.handle('msync:checkNeteaseLogin', () => {
+        const code = codes.shift();
+        if (code === 'rejected') return { ok: false, error: '网易云未接受本次登录请求（代码 405）。若手机提示“设备环境异常”，请暂停扫码。' };
+        return { ok: true, value: { code, view: code === 803 ? {
+          ...state, message: '网易云已连接。', connections: state.connections.map(connection => connection.platform === 'netease' ? { ...connection, connected: true } : connection)
+        } : state } };
+      });
+    }, view);
+    await page.getByRole('button', { name: '账户与设置' }).click();
+    await page.getByRole('button', { name: '生成登录二维码' }).click();
+    const qr = page.getByRole('dialog', { name: '使用网易云音乐 App 扫码' });
+    await expect(qr.getByText('扫码后在手机上确认，再检查登录状态。')).toBeVisible();
+    await qr.getByRole('button', { name: '检查登录状态' }).click();
+    await expect(qr.getByRole('status')).toHaveText('请在手机上确认登录。');
+    await qr.getByRole('button', { name: '检查登录状态' }).click();
+    await expect(qr.getByRole('alert')).toContainText('代码 405');
+    await expect(qr.getByRole('alert')).toContainText('设备环境异常');
+    await qr.getByRole('button', { name: '检查登录状态' }).click();
+    await expect(qr.getByRole('status')).toHaveText('等待扫码。');
+    await expect(qr.getByRole('alert')).toHaveCount(0);
+    await qr.getByRole('button', { name: '检查登录状态' }).click();
+    await expect(qr).not.toBeVisible();
+    await expect(page.getByText('二维码已过期，请重新生成。')).toBeVisible();
+    await page.getByRole('button', { name: '生成登录二维码' }).click();
+    await expect(qr.getByRole('status')).toHaveText('扫码后在手机上确认，再检查登录状态。');
+    await qr.getByRole('button', { name: '检查登录状态' }).click();
+    await expect(qr).not.toBeVisible();
+    await expect(page.getByRole('button', { name: '重新扫码登录' })).toBeVisible();
+  } finally { await application.close(); rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+});

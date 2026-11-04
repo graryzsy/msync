@@ -10,7 +10,10 @@ export class NeteaseService implements MusicService {
   static library(): API { return this.api ??= createRequire(import.meta.url)('@neteasecloudmusicapienhanced/api') as API; }
   static async invoke(request: Request, api?: API): Promise<unknown> {
     try { return await execute(request, api ?? this.library()); }
-    catch { throw new MSyncError('网易云连接或数据读取失败，请检查登录和网络后重试'); }
+    catch (error) {
+      if (error instanceof MSyncError) throw error;
+      throw new MSyncError('网易云连接或数据读取失败，请检查登录和网络后重试');
+    }
   }
   async snapshot(kind: Kind): Promise<Snapshot> { return snapshotSchema.parse(await NeteaseService.invoke({ action: 'snapshot', kind, cookie: this.cookie }, this.api)); }
   async search(item: MusicItem): Promise<MusicItem[]> { return z.array(itemSchema).parse(await NeteaseService.invoke({ action: 'search', kind: item.kind, cookie: this.cookie, query: [item.title, ...item.artists].join(' ') }, this.api)); }

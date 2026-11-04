@@ -1,3 +1,5 @@
+import { MSyncError } from '../core/models.js';
+
 type ObjectValue = Record<string, any>;
 export type API = Record<string, (params: ObjectValue) => Promise<{ body: ObjectValue }>>;
 export type Kind = "track" | "album" | "artist";
@@ -45,25 +47,42 @@ function artistItem(artist: ObjectValue): ObjectValue {
   return { platform: "netease", kind: "artist", id: String(artist.id), title: artist.name, artists: [artist.name], url: `https://music.163.com/#/artist?id=${artist.id}` };
 }
 
+function requestFailure(code: unknown, login: boolean): MSyncError {
+  const detail = typeof code === 'number' && Number.isSafeInteger(code) ? `（代码 ${code}）` : '';
+  if (login) return new MSyncError(`网易云未接受本次登录请求${detail}。若手机提示“设备环境异常”，请暂停扫码，先检查官方 App 和日常网络，并按页面提示稍后再试；反复生成二维码不能解除限制。`);
+  if (code === 301) return new MSyncError('网易云登录已过期，请重新连接账户');
+  return new MSyncError(`网易云请求未完成${detail}，请检查账户和网络后重试；本次读取不会作为空收藏列表处理`);
+}
+
 export async function execute(request: Request, api: API): Promise<unknown> {
+  const login = request.action === 'qrStart' || request.action === 'qrCheck';
   const call = async (name: string, params: ObjectValue = {}, qr = false): Promise<ObjectValue> => {
     const method = api[name];
     if (!method) throw new Error("网易云接口模块缺失，请检查辅助模块版本");
-    const response = await method({ ...params, cookie: request.cookie ?? "", timestamp: Date.now() });
-    if (!response?.body || (!qr && response.body.code !== 200)) throw new Error("网易云请求失败或登录过期；请重新连接后扫描");
+    let response;
+    try { response = await method({ ...params, cookie: request.cookie ?? "", timestamp: Date.now() }); }
+    catch (error) {
+      const body = error && typeof error === 'object' && 'body' in error ? error.body : undefined;
+      if (body && typeof body === 'object' && 'code' in body) throw requestFailure(body.code, login);
+      throw new MSyncError('网易云连接或数据读取失败，请检查网络连接后重试');
+    }
+    if (!response?.body || (!qr && response.body.code !== 200)) throw requestFailure(response?.body?.code, login);
     return response.body;
   };
   if (request.action === "qrStart") {
-    const keyResult = await call("login_qr_key");
+    const keyResult = await call("login_qr_key", { ua: 'pc' });
+    if (keyResult.data?.code !== undefined && keyResult.data.code !== 200) throw requestFailure(keyResult.data.code, true);
     const key = keyResult.data?.unikey;
-    if (typeof key !== "string") throw new Error("未获得登录二维码");
-    const result = await call("login_qr_create", { key, qrimg: true });
+    if (typeof key !== "string" || !key) throw new MSyncError("网易云未返回有效登录二维码，请稍后再试");
+    // Follow the bundled component's web login example: it adds the chainId
+    // carried by web QR codes. The default 'pc' format omits that parameter.
+    const result = await call("login_qr_create", { key, platform: 'web', qrimg: true, ua: 'pc' });
     if (typeof result.data?.qrimg !== "string") throw new Error("二维码生成失败");
     return { key, image: result.data.qrimg };
   }
   if (request.action === "qrCheck") {
-    const result = await call("login_qr_check", { key: request.key }, true);
-    if (![800, 801, 802, 803].includes(result.code)) throw new Error("登录状态不可用，请重新生成二维码");
+    const result = await call("login_qr_check", { key: request.key, ua: 'pc' }, true);
+    if (![800, 801, 802, 803].includes(result.code)) throw requestFailure(result.code, true);
     return { code: result.code, ...(result.code === 803 ? { cookie: result.cookie } : {}) };
   }
   const kind = request.kind;
