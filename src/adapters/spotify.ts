@@ -7,10 +7,10 @@ import { APIDataError, parseResponse, readJSON } from './response.js';
 
 const optionalText = z.string().nullish().transform(value => value ?? undefined);
 const optionalNumber = z.number().nonnegative().nullish().transform(value => value ?? undefined);
-const artistSchema = z.object({ name: z.string().min(1) });
+const artistSchema = z.object({ name: z.string().trim().min(1) });
 const externalIDs = z.object({ upc: optionalText, isrc: optionalText }).nullish().transform(value => value ?? undefined);
-const albumSchema = z.object({ name: z.string().min(1), artists: z.array(artistSchema), release_date: optionalText, external_ids: externalIDs });
-const entitySchema = z.object({ id: z.string().min(1), name: z.string().min(1), artists: z.array(artistSchema).nullish(), album: albumSchema.nullish(),
+const albumSchema = z.object({ name: z.string().trim().min(1), artists: z.array(artistSchema), release_date: optionalText, external_ids: externalIDs });
+const entitySchema = z.object({ id: z.string().min(1), name: z.string().trim().min(1), artists: z.array(artistSchema).nullish(), album: albumSchema.nullish(),
   release_date: optionalText, external_ids: externalIDs, disc_number: optionalNumber, track_number: optionalNumber, duration_ms: optionalNumber,
   external_urls: z.object({ spotify: optionalText }).nullish(), is_local: z.boolean().nullish(), linked_from: z.object({ id: optionalText }).nullish() });
 export function spotifyItem(input: unknown, kind: Kind, context = `Spotify ${kindLabels[kind]}`): MusicItem {
@@ -53,12 +53,15 @@ export class SpotifyService implements MusicService {
       for (const row of page.items) {
         rowsRead++;
         const rowContext = `${context} 第 ${rowsRead} 项`;
+        let entity: unknown;
         try {
-          const entity = kind === 'artist' ? row : parseResponse(z.object({ track: z.unknown(), album: z.unknown() }), row, rowContext)[kind];
+          entity = kind === 'artist' ? row : parseResponse(z.object({ track: z.unknown(), album: z.unknown() }), row, rowContext)[kind];
           items.push(spotifyItem(entity, kind, rowContext));
         } catch (error) {
           if (!(error instanceof APIDataError)) throw error;
-          unreadable++; firstProblem ||= error.message;
+          const id = entity && typeof entity === 'object' && 'id' in entity ? entity.id : undefined;
+          const link = typeof id === 'string' && /^[A-Za-z0-9]{1,64}$/u.test(id) ? `。可在官方页面核实：https://open.spotify.com/${kind}/${id}` : '';
+          unreadable++; firstProblem ||= `${error.message}${link}`;
         }
       }
       next = page.next;

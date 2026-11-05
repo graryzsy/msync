@@ -1,4 +1,6 @@
 import { MSyncError } from '../core/models.js';
+import { createNeteaseContext, paceNeteaseRequest, type NeteaseContext } from './netease-context.js';
+import { normalize } from '../core/matcher.js';
 
 type ObjectValue = Record<string, any>;
 export type API = Record<string, (params: ObjectValue) => Promise<{ body: ObjectValue }>>;
@@ -16,7 +18,7 @@ export function releaseDay(timestamp: unknown): string | undefined {
 
 function artists(object: ObjectValue): string[] {
   const values = object.artists ?? (object.artist ? [object.artist] : []);
-  return values.map((a: ObjectValue) => a.name).filter((name: unknown) => typeof name === "string" && name.length > 0);
+  return (Array.isArray(values) ? values : []).filter(a => a && typeof a.name === 'string').map(a => a.name).filter(name => name.trim().length > 0);
 }
 
 export function albumItem(album: ObjectValue): ObjectValue {
@@ -33,7 +35,7 @@ export function trackItem(song: ObjectValue, album: ObjectValue): ObjectValue {
   if (!song.id || typeof song.name !== "string") throw new MSyncError("网易云歌曲元数据缺失");
   return {
     platform: "netease", kind: "track", id: String(song.id), title: song.name,
-    artists: (song.ar ?? song.artists ?? []).map((a: ObjectValue) => a.name),
+    artists: artists({ artists: song.ar ?? song.artists ?? [] }),
     release: albumItem(album).release,
     durationMS: song.dt ?? song.duration,
     trackNumber: song.no > 0 ? song.no : undefined,
@@ -47,18 +49,23 @@ function artistItem(artist: ObjectValue): ObjectValue {
   return { platform: "netease", kind: "artist", id: String(artist.id), title: artist.name, artists: [artist.name], url: `https://music.163.com/#/artist?id=${artist.id}` };
 }
 
+class NeteaseRequestError extends MSyncError {
+  constructor(message: string, readonly code?: number) { super(message); }
+}
+
 function requestFailure(name: string, code: unknown, login: boolean): MSyncError {
   const detail = typeof code === 'number' && Number.isSafeInteger(code) ? `（代码 ${code}）` : '';
   if (login) return new MSyncError(`网易云未接受本次登录请求${detail}（接口 ${name}）。若手机提示“设备环境异常”，请暂停扫码，先检查官方 App 和日常网络，并按页面提示稍后再试；反复生成二维码不能解除限制。`);
-  if (code === 301) return new MSyncError(`网易云登录已过期（接口 ${name}），请重新连接账户`);
-  return new MSyncError(`网易云接口 ${name} 请求失败${detail || '（响应缺少成功状态码）'}，请检查账户和网络后重试`);
+  if (code === 301) return new NeteaseRequestError(`网易云登录已过期（接口 ${name}），请重新连接账户`, 301);
+  return new NeteaseRequestError(`网易云接口 ${name} 请求失败${detail || '（响应缺少成功状态码）'}，请检查账户和网络后重试`, typeof code === 'number' ? code : undefined);
 }
 
-export async function execute(request: Request, api: API): Promise<unknown> {
+export async function execute(request: Request, api: API, context = createNeteaseContext()): Promise<unknown> {
   const login = request.action === 'qrStart' || request.action === 'qrCheck';
   const call = async (name: string, params: ObjectValue = {}, qr = false): Promise<ObjectValue> => {
     const method = api[name];
     if (!method) throw new MSyncError(`网易云接口模块 ${name} 缺失，请检查辅助模块版本`);
+    await paceNeteaseRequest(context);
     let response;
     try { response = await method({ ...params, cookie: request.cookie ?? "", timestamp: Date.now() }); }
     catch (error) {
@@ -98,14 +105,51 @@ export async function execute(request: Request, api: API): Promise<unknown> {
     return String(id);
   };
   const accountID = await userID();
-  const albumCache = new Map<string, ObjectValue>();
-  const album = async (id: string): Promise<ObjectValue> => {
-    if (!albumCache.has(id)) {
-      const result = await call("album", { id });
-      if (!result.album || String(result.album.id) !== id) throw new MSyncError("网易云发行版本读取失败");
-      albumCache.set(id, result.album);
+  let incompleteReleases = 0;
+  let detailProblem: string | undefined;
+  const fullRelease = (value: ObjectValue): boolean => !!releaseDay(value.publishTime) && artists(value).length > 0;
+  const sameRelease = (a: ObjectValue, b: ObjectValue): boolean => {
+    if (typeof a.name === 'string' && a.name.trim() && typeof b.name === 'string' && b.name.trim() && normalize(a.name) !== normalize(b.name)) return false;
+    const firstDate = releaseDay(a.publishTime), secondDate = releaseDay(b.publishTime);
+    return !firstDate || !secondDate || firstDate === secondDate;
+  };
+  const mergeAlbum = (fallback: ObjectValue, detail: ObjectValue): ObjectValue => ({
+    id: detail.id,
+    name: typeof detail.name === 'string' && detail.name.trim() ? detail.name : fallback.name,
+    artists: (artists(detail).length ? artists(detail) : artists(fallback)).map(name => ({ name })),
+    publishTime: releaseDay(detail.publishTime) ? detail.publishTime : fallback.publishTime
+  });
+  const rememberAlbum = (id: string, value: ObjectValue): ObjectValue => {
+    const minimal = { id: value.id, name: value.name, artists: artists(value).map(name => ({ name })), publishTime: value.publishTime };
+    albumItem(minimal);
+    context.albums.delete(id);
+    context.albums.set(id, { value: minimal, expiresAt: context.now() + 15 * 60_000 });
+    if (context.albums.size > 1000) context.albums.delete(context.albums.keys().next().value!);
+    return minimal;
+  };
+  const album = async (id: string, fallback: ObjectValue): Promise<ObjectValue> => {
+    if (!/^\d+$/.test(id) || String(fallback.id) !== id) throw new MSyncError('网易云发行版本 ID 无效');
+    let value = fallback;
+    const cached = context.albums.get(id);
+    if (fullRelease(fallback)) value = rememberAlbum(id, fallback);
+    else if (cached && cached.expiresAt > context.now() && sameRelease(fallback, cached.value)) value = mergeAlbum(fallback, cached.value);
+    else if (context.albumDetailsBlockedUntil > context.now()) detailProblem ??= context.albumDetailsProblem;
+    else {
+      context.albums.delete(id);
+      try {
+        const result = await call('album', { id });
+        if (!result.album || String(result.album.id) !== id) throw new MSyncError('网易云专辑详情未返回对应发行版本');
+        if (!sameRelease(fallback, result.album)) throw new MSyncError('网易云专辑详情与收藏列表的发行版本存在冲突，保留列表信息等待核实');
+        value = rememberAlbum(id, mergeAlbum(fallback, result.album));
+      } catch (error) {
+        if (!(error instanceof MSyncError) || error instanceof NeteaseRequestError && error.code === 301) throw error;
+        context.albumDetailsBlockedUntil = context.now() + 5 * 60_000;
+        context.albumDetailsProblem = error.message;
+        detailProblem ??= error.message;
+      }
     }
-    return albumCache.get(id)!;
+    if (!fullRelease(value)) incompleteReleases++;
+    return value;
   };
   const tracks = async (ids: string[]): Promise<ObjectValue[]> => {
     const items: ObjectValue[] = [];
@@ -117,7 +161,9 @@ export async function execute(request: Request, api: API): Promise<unknown> {
       for (const id of batch) {
         const song = byID.get(id);
         if (!song || !(song.al?.id ?? song.album?.id)) throw new MSyncError("网易云歌曲缺少所属发行版本");
-        const release = await album(String(song.al?.id ?? song.album.id));
+        // Only album-level metadata supplies the release date. A song's own
+        // publishTime can describe another release and must not fill this gap.
+        const release = await album(String(song.al?.id ?? song.album.id), song.al ?? song.album);
         items.push(trackItem(song, release));
       }
     }
@@ -141,7 +187,7 @@ export async function execute(request: Request, api: API): Promise<unknown> {
     if (kind === "track") return tracks(values.map((song: ObjectValue) => String(song.id)));
     if (kind === "artist") return values.map(artistItem);
     const items = [];
-    for (const value of values) items.push(albumItem(await album(String(value.id))));
+    for (const value of values) items.push(albumItem(await album(String(value.id), value)));
     return items;
   }
   if (request.action !== "snapshot") throw new MSyncError("未知操作");
@@ -155,7 +201,7 @@ export async function execute(request: Request, api: API): Promise<unknown> {
       if (offset >= 100_000) throw new MSyncError("网易云分页超出限制");
       const result = await call(kind === "album" ? "album_sublist" : "artist_sublist", { offset, limit: 100 });
       if (!Array.isArray(result.data)) throw new MSyncError("网易云收藏分页无效");
-      for (const row of result.data) items.push(kind === "album" ? albumItem(await album(String(row.id))) : artistItem(row));
+      for (const row of result.data) items.push(kind === "album" ? albumItem(await album(String(row.id), row)) : artistItem(row));
       if (result.data.length < 100 || result.hasMore === false || result.more === false) {
         if (typeof result.count === "number" && result.count !== items.length) throw new MSyncError("网易云收藏数量变化，请重新扫描");
         break;
@@ -164,5 +210,6 @@ export async function execute(request: Request, api: API): Promise<unknown> {
   }
   if (new Set(items.map(item => item.id)).size !== items.length) throw new MSyncError("网易云收藏分页重复，请重新扫描");
   if (await userID() !== accountID) throw new MSyncError("扫描期间网易云账户发生变化");
-  return { platform: "netease", kind, accountID, capturedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), items, savedIDs: items.map(item => item.id), isComplete: true, notes: [] };
+  const notes = incompleteReleases ? [`收藏状态已读取；${incompleteReleases} 项缺少完整发行日期或专辑艺人资料，建立对应关系前需要核实。${detailProblem ? `专辑详情暂缓读取：${detailProblem}。详情请求已暂缓 5 分钟，收藏状态仍会重新读取。` : ''}`] : [];
+  return { platform: "netease", kind, accountID, capturedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), items, savedIDs: items.map(item => item.id), isComplete: true, notes };
 }

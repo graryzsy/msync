@@ -4,6 +4,9 @@ import { createRequire } from "node:module";
 import { execute, releaseDay, trackItem, type API } from "../src/adapters/netease-api.js";
 import { NeteaseService } from "../src/adapters/netease.js";
 import { MSyncError } from "../src/core/models.js";
+import { createNeteaseContext } from '../src/adapters/netease-context.js';
+import { assess } from '../src/core/matcher.js';
+import { item } from './fixtures.js';
 
 function apiWith(methods: API = {}): API {
   return { login_status: async () => ({ body: { data: { code: 200, profile: { userId: 123 } } } }), ...methods };
@@ -43,6 +46,111 @@ test('failed collection calls identify their endpoint and status without exposin
     assert.ok(error instanceof MSyncError); assert.match(error.message, /album_sublist/); assert.match(error.message, /代码 460/);
     assert.doesNotMatch(error.message, /private-/); return true;
   });
+});
+test('album 405 preserves known favorites, leaves release dates unknown and pauses detail lookups across collections', async () => {
+  let now = 0, albumRequests = 0, detailAllowed = false;
+  const context = createNeteaseContext({ now: () => now });
+  const api = apiWith({
+    likelist: async () => ({ body: { code: 200, ids: [1, 2] } }),
+    song_detail: async () => ({ body: { code: 200, songs: [1, 2].map(id => ({ id, name: `Song ${id}`, ar: [{ name: 'Performer' }],
+      al: { id: 42, name: 'Original Album' }, publishTime: Date.parse('1999-01-01T00:00:00Z') })) } }),
+    album_sublist: async () => ({ body: { code: 200, data: [{ id: 43, name: 'Another Album', artists: [{ name: 'Album Artist' }] }], count: 1 } }),
+    album: async params => {
+      albumRequests++;
+      return { body: detailAllowed ? { code: 200, album: { id: params.id, name: 'Another Album', artists: [{ name: 'Album Artist' }], publishTime: Date.parse('2024-02-29T00:00:00Z') } }
+        : { code: 405, message: 'private-response', cookie: 'private-cookie' } };
+    }
+  });
+  const service = new NeteaseService('fixture', api, context);
+  const tracks = await service.snapshot('track'), albums = await service.snapshot('album');
+  assert.deepEqual(tracks.savedIDs, ['1', '2']); assert.deepEqual(albums.savedIDs, ['43']);
+  assert.equal(tracks.isComplete, true); assert.equal(albums.isComplete, true);
+  assert.equal(tracks.items[0]?.release?.date, undefined); assert.deepEqual(tracks.items[0]?.release?.artists, []);
+  assert.equal(assess(item('spotify'), tracks.items[0]!).decision, 'needsReview');
+  assert.match(tracks.notes.join(' '), /代码 405/); assert.match(albums.notes.join(' '), /5 分钟/);
+  assert.doesNotMatch(tracks.notes.join(' '), /private-/); assert.equal(albumRequests, 1);
+  now += 5 * 60_000 + 1; detailAllowed = true;
+  const recovered = await service.snapshot('album');
+  assert.equal(albumRequests, 2); assert.equal(recovered.items[0]?.release?.date?.value, '2024-02-29'); assert.deepEqual(recovered.notes, []);
+});
+test('album collection metadata avoids detail requests when the release is already complete', async () => {
+  let detailRequests = 0;
+  const api = apiWith({
+    album_sublist: async () => ({ body: { code: 200, data: [{ id: 42, name: 'Original Album', artists: [{ name: 'Artist' }], publishTime: Date.parse('2024-02-29T00:00:00Z') }], count: 1 } }),
+    album: async () => { detailRequests++; throw new Error('unnecessary detail request'); }
+  });
+  const snapshot = await new NeteaseService('fixture', api, createNeteaseContext()).snapshot('album');
+  assert.equal(detailRequests, 0); assert.equal(snapshot.items[0]?.release?.date?.value, '2024-02-29'); assert.deepEqual(snapshot.notes, []);
+});
+test('release metadata cache spans scans while favorites are fetched fresh and cache entries expire', async () => {
+  let now = 0, albumRequests = 0, favoriteRequests = 0, liked = true;
+  const context = createNeteaseContext({ now: () => now });
+  const api = apiWith({
+    likelist: async () => { favoriteRequests++; return { body: { code: 200, ids: liked ? [1] : [] } }; },
+    song_detail: async () => ({ body: { code: 200, songs: [{ id: 1, name: 'Song', ar: [{ name: 'Artist' }], al: { id: 42, name: 'Original Album' } }] } }),
+    album_sublist: async () => ({ body: { code: 200, data: [{ id: 42, name: 'Original Album' }], count: 1 } }),
+    album: async () => { albumRequests++; return { body: { code: 200, album: { id: 42, name: 'Original Album', artists: [{ name: 'Artist' }], publishTime: Date.parse('2024-02-29T00:00:00Z') } } }; }
+  });
+  const service = new NeteaseService('fixture', api, context);
+  assert.deepEqual((await service.snapshot('track')).savedIDs, ['1']);
+  assert.equal((await service.snapshot('album')).items[0]?.release?.date?.value, '2024-02-29'); assert.equal(albumRequests, 1);
+  liked = false; assert.deepEqual((await service.snapshot('track')).savedIDs, []); assert.equal(favoriteRequests, 2);
+  liked = true; now = 14 * 60_000; await service.snapshot('track'); assert.equal(albumRequests, 1);
+  now = 16 * 60_000; await service.snapshot('track'); assert.equal(albumRequests, 2);
+});
+test('new service instances share metadata only for the same API and credentials', async () => {
+  let albumRequests = 0;
+  const api = apiWith({
+    album_sublist: async () => ({ body: { code: 200, data: [{ id: 42, name: 'Original Album' }], count: 1 } }),
+    album: async () => { albumRequests++; return { body: { code: 200, album: { id: 42, name: 'Original Album', artists: [{ name: 'Artist' }], publishTime: Date.parse('2024-02-29T00:00:00Z') } } }; }
+  });
+  await new NeteaseService('first-cookie-fixture', api).snapshot('album');
+  await new NeteaseService('first-cookie-fixture', api).snapshot('album'); assert.equal(albumRequests, 1);
+  await new NeteaseService('second-cookie-fixture', api).snapshot('album'); assert.equal(albumRequests, 2);
+});
+test('missing detail fields retain independently returned album metadata without substituting song dates', async () => {
+  const api = apiWith({
+    album_sublist: async () => ({ body: { code: 200, data: [{ id: 42, name: 'Original Album', publishTime: Date.parse('2024-02-29T00:00:00Z') }], count: 1 } }),
+    album: async () => ({ body: { code: 200, album: { id: 42, artists: [{ name: 'Artist' }] } } })
+  });
+  const snapshot = await new NeteaseService('fixture', api, createNeteaseContext()).snapshot('album');
+  assert.equal(snapshot.items[0]?.title, 'Original Album'); assert.equal(snapshot.items[0]?.release?.date?.value, '2024-02-29');
+  assert.deepEqual(snapshot.items[0]?.artists, ['Artist']); assert.deepEqual(snapshot.notes, []);
+});
+test('conflicting album details cannot replace the collection release', async () => {
+  for (const detail of [{ id: 99, name: 'Original Album' }, { id: 42, name: 'Greatest Hits' }]) {
+    const api = apiWith({
+      album_sublist: async () => ({ body: { code: 200, data: [{ id: 42, name: 'Original Album', artists: [{ name: 'Artist' }] }], count: 1 } }),
+      album: async () => ({ body: { code: 200, album: { ...detail, artists: [{ name: 'Artist' }], publishTime: Date.parse('2024-02-29T00:00:00Z') } } })
+    });
+    const snapshot = await new NeteaseService('fixture', api, createNeteaseContext()).snapshot('album');
+    assert.equal(snapshot.items[0]?.id, '42'); assert.equal(snapshot.items[0]?.release?.title, 'Original Album');
+    assert.equal(snapshot.items[0]?.release?.date, undefined); assert.ok(snapshot.notes.length);
+  }
+});
+test('authentication or membership failures remain fatal even when metadata can be read partially', async () => {
+  for (const endpoint of ['album', 'album_sublist']) {
+    const api = apiWith({
+      album_sublist: async () => ({ body: endpoint === 'album_sublist' ? { code: 405 } : { code: 200, data: [{ id: 42, name: 'Original Album' }], count: 1 } }),
+      album: async () => ({ body: { code: 301 } })
+    });
+    await assert.rejects(new NeteaseService('fixture', api, createNeteaseContext()).snapshot('album'), error => {
+      assert.ok(error instanceof MSyncError); assert.match(error.message, endpoint === 'album' ? /登录已过期/ : /album_sublist/); return true;
+    });
+  }
+});
+test('request pacing spans collection kinds without waiting on wall-clock time in tests', async () => {
+  let now = 0;
+  const starts: number[] = [];
+  const context = createNeteaseContext({ now: () => now, pause: async ms => { now += ms; }, minIntervalMS: 250 });
+  const api = apiWith({
+    login_status: async () => { starts.push(now); return { body: { data: { code: 200, profile: { userId: 123 } } } }; },
+    artist_sublist: async () => { starts.push(now); return { body: { code: 200, data: [], count: 0 } }; },
+    likelist: async () => { starts.push(now); return { body: { code: 200, ids: [] } }; }
+  });
+  const service = new NeteaseService('fixture', api, context);
+  await service.snapshot('artist'); await service.snapshot('track');
+  assert.deepEqual(starts, [0, 250, 500, 750, 1000, 1250]);
 });
 test("release dates retain NetEase calendar day, missing dates remain missing", () => {
   assert.equal(releaseDay(Date.parse("2024-02-28T16:00:00Z")), "2024-02-29");

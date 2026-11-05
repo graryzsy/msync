@@ -85,6 +85,14 @@ test('all-unavailable Spotify records remain unknown rather than a complete empt
   const result = await new SpotifyService(token, () => {}, fixture.fetcher).snapshot('album');
   assert.equal(result.isComplete, false); assert.deepEqual(result.items, []); assert.equal(result.notes.length, 1);
 });
+test('empty Spotify names stay unresolved and include an official item URL for manual checking', async () => {
+  const fixture = transport([{ body: { id: 'user' } }, { body: { items: [
+    { track: { id: 'empty123', name: '' } }, { track: { id: 'blank123', name: '   ' } }
+  ], next: null, total: 2 } }]);
+  const snapshot = await new SpotifyService(token, () => {}, fixture.fetcher).snapshot('track');
+  assert.equal(snapshot.isComplete, false); assert.deepEqual(snapshot.items, []); assert.match(snapshot.notes.join(' '), /文本为空/);
+  assert.match(snapshot.notes.join(' '), /https:\/\/open\.spotify\.com\/track\/empty123/);
+});
 test('Spotify relinked tracks and local files cannot masquerade as complete saved release state', async () => {
   const entity = { id: 'substitute123', name: 'Song', artists: [{ name: 'Artist' }], album: { name: 'Original Album', artists: [{ name: 'Artist' }], release_date: '2024-02-29' } };
   const fixture = transport([{ body: { id: 'user' } }, { body: { items: [
