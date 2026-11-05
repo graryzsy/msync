@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { errorMessage, kinds, labels, MSyncError, observedState, snapshotKey, snapshotSchema, type MusicService, type SyncPlan, type ApplyReport, type Snapshot } from './models.js';
+import { errorMessage, kindLabels, kinds, labels, MSyncError, observedState, snapshotKey, snapshotSchema, type MusicService, type SyncPlan, type ApplyReport, type Snapshot } from './models.js';
 import { planSync } from './planner.js';
 import { StateStore } from './store.js';
 
@@ -18,11 +18,17 @@ export class SyncCoordinator {
   preview(services: MusicService[]): Promise<SyncPlan> {
     return this.exclusively(async () => {
       const state = this.store.load(), observations: Snapshot[] = [], failures: SyncPlan['issues'] = [];
+      const notes = new Set<string>();
       for (const service of services) for (const kind of kinds) {
-        try { observations.push(await this.read(service, kind)); }
-        catch (error) { failures.push({ id: randomUUID(), message: `${labels[service.platform]} · ${kind}：${errorMessage(error)}` }); }
+        const unsupported = service.unsupportedKinds?.[kind];
+        if (unsupported) { notes.add(`${labels[service.platform]} · ${kindLabels[kind]}：${unsupported}`); continue; }
+        try {
+          const snapshot = await this.read(service, kind); observations.push(snapshot);
+          for (const note of snapshot.notes) notes.add(`${labels[service.platform]}：${note}`);
+        }
+        catch (error) { failures.push({ id: randomUUID(), message: `${labels[service.platform]} · ${kindLabels[kind]}：${errorMessage(error)}` }); }
       }
-      const plan = planSync(state, observations); plan.issues.push(...failures); return plan;
+      const plan = planSync(state, observations); plan.issues.push(...failures); plan.notes = [...notes]; return plan;
     });
   }
   apply(plan: SyncPlan, services: MusicService[]): Promise<ApplyReport> {

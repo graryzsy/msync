@@ -5,7 +5,9 @@ import { SpotifyService } from '../src/adapters/spotify.js';
 import type { Fetcher } from '../src/adapters/http.js';
 import { nativeSnapshot } from '../src/adapters/apple-native.js';
 import { AppleWebService, appleCatalogID, ManualAppleLibrary } from '../src/adapters/apple-web.js';
-import { item } from './fixtures.js';
+import { item, mapping, snap, stateFor } from './fixtures.js';
+import { planSync } from '../src/core/planner.js';
+import { MSyncError } from '../src/core/models.js';
 
 const token: SpotifyToken = { accessToken: 'fixture', refreshToken: 'a+b', clientID: '0'.repeat(32), expiresAt: '2099-01-01T00:00:00Z' };
 function transport(responses: { status?: number; body?: unknown }[]) {
@@ -52,6 +54,65 @@ test('foreign pagination host is rejected before credentials can be sent', async
 test('failed pagination cannot yield a successful empty or partial scan', async () => {
   const fixture = transport([{ body: { id: 'user' } }, { body: { items: [{ track: { id: 'a', name: 'Song', artists: [{ name: 'Artist' }], album: { name: 'Album', artists: [{ name: 'Artist' }], release_date: '2024-01-01' } } }], next: 'https://api.spotify.com/v1/me/tracks?offset=1', total: 2 } }, { status: 429 }]);
   await assert.rejects(new SpotifyService(token, () => {}, fixture.fetcher).snapshot('track'), /限流/u);
+});
+test('Spotify accepts null optional release metadata without inventing dates, identifiers or track positions', async () => {
+  for (const kind of ['track', 'album'] as const) {
+    const entity = { id: 'valid123', name: 'Album', artists: [{ name: 'Artist' }], release_date: null,
+      external_ids: { upc: null, isrc: null }, external_urls: null, disc_number: null, track_number: null, duration_ms: null,
+      ...(kind === 'track' ? { album: { name: 'Album', artists: [{ name: 'Artist' }], release_date: null, external_ids: null } } : {}) };
+    const fixture = transport([{ body: { id: 'user' } }, { body: { items: [{ [kind]: entity }], next: null, total: 1 } }]);
+    const result = await new SpotifyService(token, () => {}, fixture.fetcher).snapshot(kind);
+    assert.equal(result.isComplete, true); assert.deepEqual(result.savedIDs, ['valid123']);
+    const value = result.items[0]!; assert.equal(value.release?.date, undefined); assert.equal(value.release?.barcode, undefined);
+    assert.equal(value.isrc, undefined); assert.equal(value.trackNumber, undefined); assert.equal(value.durationMS, undefined);
+  }
+});
+test('unavailable Spotify entries produce a partial snapshot and cannot imply cancellations', async () => {
+  const fixture = transport([{ body: { id: 'user' } }, { body: { items: [
+    { track: { id: 'readable123', name: 'Song', artists: [{ name: 'Artist' }], album: { name: 'Album', artists: [{ name: 'Artist' }], release_date: '2024-02' } } },
+    { track: { id: { credential: 'private-cookie' }, name: 'private-title' } }, { track: null }
+  ], next: null, total: 3 } }]);
+  const result = await new SpotifyService(token, () => {}, fixture.fetcher).snapshot('track');
+  assert.equal(result.isComplete, false); assert.deepEqual(result.savedIDs, ['readable123']);
+  assert.match(result.notes.join(' '), /2 项/); assert.match(result.notes.join(' '), /第 2 项/);
+  assert.doesNotMatch(result.notes.join(' '), /private-/); assert.equal(result.items[0]?.release?.date?.value, '2024-02');
+  const a = item('spotify'), b = item('netease'), state = stateFor(mapping([a, b]), [snap(a, true, true, 'user'), snap(b, true)]);
+  const plan = planSync(state, [result, snap(b, true)]);
+  assert.equal(plan.operations.length, 0); assert.ok(plan.issues.some(issue => issue.message.includes('未读到可靠状态')));
+});
+test('all-unavailable Spotify records remain unknown rather than a complete empty list', async () => {
+  const fixture = transport([{ body: { id: 'user' } }, { body: { items: [{ album: null }], next: null, total: 1 } }]);
+  const result = await new SpotifyService(token, () => {}, fixture.fetcher).snapshot('album');
+  assert.equal(result.isComplete, false); assert.deepEqual(result.items, []); assert.equal(result.notes.length, 1);
+});
+test('Spotify relinked tracks and local files cannot masquerade as complete saved release state', async () => {
+  const entity = { id: 'substitute123', name: 'Song', artists: [{ name: 'Artist' }], album: { name: 'Original Album', artists: [{ name: 'Artist' }], release_date: '2024-02-29' } };
+  const fixture = transport([{ body: { id: 'user' } }, { body: { items: [
+    { track: { ...entity, linked_from: { id: 'original123' } } }, { track: { ...entity, id: 'local123', is_local: true } }
+  ], next: null, total: 2 } }]);
+  const result = await new SpotifyService(token, () => {}, fixture.fetcher).snapshot('track');
+  assert.equal(result.isComplete, false); assert.deepEqual(result.savedIDs, []); assert.match(result.notes.join(' '), /重定向/);
+  const a = item('spotify', 'track', 'original123'), b = item('netease'), state = stateFor(mapping([a, b]), [snap(a, true, true, 'user'), snap(b, true)]);
+  assert.equal(planSync(state, [result, snap(b, true)]).operations.length, 0);
+});
+test('malformed Spotify pages and non-JSON replies retain safe endpoint and field diagnostics', async () => {
+  for (const page of [{ next: null, total: 0 }, { items: [], total: 0 }]) {
+    const fixture = transport([{ body: { id: 'user' } }, { body: page }]);
+    await assert.rejects(new SpotifyService(token, () => {}, fixture.fetcher).snapshot('track'), error => {
+      assert.ok(error instanceof MSyncError); assert.match(error.message, /Spotify GET \/me\/tracks/);
+      assert.match(error.message, /字段 (items|next)/); return true;
+    });
+  }
+  let calls = 0;
+  const invalidJSON: Fetcher = async () => ++calls === 1 ? new Response(JSON.stringify({ id: 'user' })) : new Response('<html>private-response</html>');
+  await assert.rejects(new SpotifyService(token, () => {}, invalidJSON).snapshot('album'), error => {
+    assert.ok(error instanceof MSyncError); assert.match(error.message, /Spotify GET \/me\/albums/);
+    assert.match(error.message, /JSON/); assert.doesNotMatch(error.message, /private-/); return true;
+  });
+});
+test('Spotify pagination still checks server totals even when entries are unreadable', async () => {
+  const fixture = transport([{ body: { id: 'user' } }, { body: { items: [{ track: null }], next: null, total: 2 } }]);
+  await assert.rejects(new SpotifyService(token, () => {}, fixture.fetcher).snapshot('track'), /收藏列表变化/);
 });
 test('Apple native scan exposes explicit false but never claims complete cloud coverage', () => {
   const scan = nativeSnapshot('track', 'library', [{ persistentID: '0123456789ABCDEF', title: 'Song', artist: 'Artist', album: 'Album', albumArtist: 'Artist', date: null, favorited: false, albumFavorited: false }]);

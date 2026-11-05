@@ -103,3 +103,33 @@ test('QR login shows confirmation and failure inside the dialog and discards exp
     await expect(page.getByRole('button', { name: '重新扫码登录' })).toBeVisible();
   } finally { await application.close(); rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });
+
+test('scan limitations and partial metadata are explained separately from request failures', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'msync-scan-notes-test-'));
+  const extra = process.platform === 'linux' ? ['--no-sandbox', '--disable-gpu', '--ozone-platform=headless'] : [];
+  const application = await electron.launch({
+    ...(process.env.MSYNC_ELECTRON_EXECUTABLE ? { executablePath: process.env.MSYNC_ELECTRON_EXECUTABLE } : {}),
+    args: [...extra, ...(process.env.MSYNC_ELECTRON_EXECUTABLE ? [] : [resolve('.')])],
+    env: { ...process.env, MSYNC_DATA_DIR: directory, XDG_CACHE_HOME: join(directory, 'cache') }, timeout: 30_000
+  });
+  try {
+    const page = await application.firstWindow();
+    await expect(page.getByRole('heading', { name: '收藏好音乐，不必重复收藏。' })).toBeVisible();
+    const state = await page.evaluate(() => window.msync!.getState());
+    await application.evaluate(({ ipcMain }, view) => {
+      ipcMain.removeHandler('msync:scan');
+      ipcMain.handle('msync:scan', () => ({ ok: true, value: { ...view, plan: {
+        id: '11111111-1111-4111-8111-111111111111', baseRevision: view.state.revision, createdAt: new Date().toISOString(),
+        observations: [], operations: [], desired: {},
+        notes: ['Apple Music · 收藏的艺人：本机 Music.app 模式没有完整艺人喜爱接口；请使用网页确认模式。', 'Spotify：有 1 项缺少可用元数据，未读到的条目状态保持未知。'],
+        issues: [{ id: '22222222-2222-4222-8222-222222222222', message: '网易云登录已过期（接口 login_status），请重新连接账户' }]
+      }, message: '扫描完成：0 项待同步，1 项待处理，2 条扫描说明。' } }));
+    }, state);
+    await page.getByRole('button', { name: '扫描收藏', exact: true }).click();
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '同步预览' }).click();
+    const notes = page.locator('section').filter({ has: page.getByRole('heading', { name: '扫描说明', exact: true }) });
+    const failures = page.locator('section').filter({ has: page.getByRole('heading', { name: '待处理项目', exact: true }) });
+    await expect(notes).toContainText('网页确认模式'); await expect(notes).toContainText('状态保持未知');
+    await expect(failures).toContainText('login_status'); await expect(failures).not.toContainText('Apple Music');
+  } finally { await application.close(); rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+});

@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { z } from 'zod';
 import { itemSchema, MSyncError, snapshotSchema, type Kind, type MusicItem, type MusicService, type Snapshot, type WriteOutcome } from '../core/models.js';
 import { execute, type API, type Request } from './netease-api.js';
+import { parseResponse } from './response.js';
 
 export class NeteaseService implements MusicService {
   readonly platform = 'netease';
@@ -15,8 +16,8 @@ export class NeteaseService implements MusicService {
       throw new MSyncError('网易云连接或数据读取失败，请检查登录和网络后重试');
     }
   }
-  async snapshot(kind: Kind): Promise<Snapshot> { return snapshotSchema.parse(await NeteaseService.invoke({ action: 'snapshot', kind, cookie: this.cookie }, this.api)); }
-  async search(item: MusicItem): Promise<MusicItem[]> { return z.array(itemSchema).parse(await NeteaseService.invoke({ action: 'search', kind: item.kind, cookie: this.cookie, query: [item.title, ...item.artists].join(' ') }, this.api)); }
+  async snapshot(kind: Kind): Promise<Snapshot> { return parseResponse(snapshotSchema, await NeteaseService.invoke({ action: 'snapshot', kind, cookie: this.cookie }, this.api), `网易云 ${kind} 收藏列表`); }
+  async search(item: MusicItem): Promise<MusicItem[]> { return parseResponse(z.array(itemSchema), await NeteaseService.invoke({ action: 'search', kind: item.kind, cookie: this.cookie, query: [item.title, ...item.artists].join(' ') }, this.api), '网易云搜索结果'); }
   async setSaved(saved: boolean, item: MusicItem): Promise<WriteOutcome> {
     if (item.platform !== 'netease') throw new MSyncError('条目平台不一致');
     await NeteaseService.invoke({ action: 'write', kind: item.kind, id: item.id, saved, cookie: this.cookie }, this.api); return { applied: true };

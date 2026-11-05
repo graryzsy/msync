@@ -32,6 +32,7 @@ export function nativeSnapshot(kind: Kind, accountID: string, rows: NativeRow[])
 }
 export class AppleNativeService implements MusicService {
   readonly platform = 'appleMusic';
+  readonly unsupportedKinds = { artist: '本机 Music.app 模式没有完整艺人喜爱接口；如需处理艺人，请使用网页确认模式。' };
   constructor(private scriptPath: string) {}
   private async invoke(payload: Record<string, unknown>): Promise<unknown> {
     if (process.platform !== 'darwin') throw new MSyncError('本机音乐 App 接入仅适用于 macOS；请使用网页确认模式');

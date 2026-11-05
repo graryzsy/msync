@@ -37,6 +37,7 @@ export interface ReviewIssue { id: string; mappingID?: string; message: string }
 export interface SyncPlan {
   id: string; baseRevision: number; createdAt: string; observations: Snapshot[];
   operations: Operation[]; issues: ReviewIssue[]; desired: Record<string, boolean>;
+  notes?: string[];
 }
 export interface AuditEntry { id: string; time: string; message: string }
 export interface StoredState {
@@ -48,6 +49,7 @@ export interface ApplyReport { applied: number; pending: PendingAction[] }
 export type WriteOutcome = { applied: true } | { applied: false; message: string; url?: string };
 export interface MusicService {
   readonly platform: Platform;
+  readonly unsupportedKinds?: Partial<Record<Kind, string>>;
   snapshot(kind: Kind): Promise<Snapshot>;
   search(item: MusicItem): Promise<MusicItem[]>;
   setSaved(saved: boolean, item: MusicItem): Promise<WriteOutcome>;

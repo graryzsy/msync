@@ -6,8 +6,44 @@ import { NeteaseService } from "../src/adapters/netease.js";
 import { MSyncError } from "../src/core/models.js";
 
 function apiWith(methods: API = {}): API {
-  return { login_status: async () => ({ body: { code: 200, data: { profile: { userId: 123 } } } }), ...methods };
+  return { login_status: async () => ({ body: { data: { code: 200, profile: { userId: 123 } } } }), ...methods };
 }
+test('the real login_status component wrapper permits all three collection scans', async () => {
+  const loginStatus = createRequire(import.meta.url)('@neteasecloudmusicapienhanced/api/module/login_status.js');
+  let statusRequests = 0;
+  const api = apiWith({
+    login_status: params => loginStatus(params, async (path: string, _data: unknown, options: { cookie: string }) => {
+      statusRequests++; assert.equal(path, '/api/w/nuser/account/get'); assert.equal(options.cookie, 'fixture-cookie');
+      return { status: 200, body: { code: 200, profile: { userId: 123 } }, cookie: [] };
+    }),
+    likelist: async () => ({ body: { code: 200, ids: [] } }),
+    album_sublist: async () => ({ body: { code: 200, data: [], count: 0 } }),
+    artist_sublist: async () => ({ body: { code: 200, data: [], count: 0 } })
+  });
+  const service = new NeteaseService('fixture-cookie', api);
+  for (const kind of ['track', 'album', 'artist'] as const) {
+    const result = await service.snapshot(kind);
+    assert.equal(result.accountID, '123'); assert.equal(result.isComplete, true); assert.deepEqual(result.savedIDs, []);
+  }
+  assert.equal(statusRequests, 6);
+});
+test('expired or malformed login status never reaches collection endpoints or becomes an empty collection', async () => {
+  for (const body of [{ code: 301 }, { data: { code: 301, profile: { userId: 123 } } }, { data: {} }, { data: { code: 200, profile: null, account: null } }]) {
+    let collectionRequests = 0;
+    const api = apiWith({ login_status: async () => ({ body }), likelist: async () => { collectionRequests++; return { body: { code: 200, ids: [] } }; } });
+    await assert.rejects(new NeteaseService('fixture-cookie', api).snapshot('track'), error => {
+      assert.ok(error instanceof MSyncError); assert.match(error.message, /login_status/); return true;
+    });
+    assert.equal(collectionRequests, 0);
+  }
+});
+test('failed collection calls identify their endpoint and status without exposing the returned body', async () => {
+  const api = apiWith({ album_sublist: async () => ({ body: { code: 460, message: 'private-response', cookie: 'private-cookie' } }) });
+  await assert.rejects(new NeteaseService('fixture-cookie', api).snapshot('album'), error => {
+    assert.ok(error instanceof MSyncError); assert.match(error.message, /album_sublist/); assert.match(error.message, /代码 460/);
+    assert.doesNotMatch(error.message, /private-/); return true;
+  });
+});
 test("release dates retain NetEase calendar day, missing dates remain missing", () => {
   assert.equal(releaseDay(Date.parse("2024-02-28T16:00:00Z")), "2024-02-29");
   assert.equal(releaseDay(0), undefined);
@@ -24,7 +60,7 @@ test("an incomplete song-detail response fails instead of publishing a shorter f
   await assert.rejects(execute({ action: "snapshot", cookie: "test", kind: "track" }, api));
 });
 test("expired login cannot become an empty snapshot", async () => {
-  const api = apiWith({ login_status: async () => ({ body: { code: 200, data: {} } }) });
+  const api = apiWith({ login_status: async () => ({ body: { data: { code: 200 } } }) });
   await assert.rejects(execute({ action: "snapshot", cookie: "expired", kind: "track" }, api));
 });
 test("writes use native album collection endpoint with explicit removal", async () => {
@@ -100,7 +136,7 @@ test('network failure does not expose the exception or instruct repeated QR gene
 });
 test("account switch during scan aborts snapshot", async () => {
   let count = 0;
-  const api = apiWith({ login_status: async () => ({ body: { code: 200, data: { account: { id: ++count } } } }),
+  const api = apiWith({ login_status: async () => ({ body: { data: { code: 200, account: { id: ++count } } } }),
     artist_sublist: async () => ({ body: { code: 200, data: [], count: 0 } }) });
   await assert.rejects(execute({ action: "snapshot", cookie: "test", kind: "artist" }, api));
 });

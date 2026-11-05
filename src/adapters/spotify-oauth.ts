@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { z } from 'zod';
 import { MSyncError } from '../core/models.js';
 import { http, type Fetcher } from './http.js';
+import { parseResponse, readJSON } from './response.js';
 
 export const redirectURI = 'http://127.0.0.1:19428/callback';
 export interface SpotifyToken { accessToken: string; refreshToken: string; expiresAt: string; clientID: string }
@@ -23,7 +24,7 @@ export function authorizationCode(callback: URL, expectedState: string): string 
 }
 async function tokenRequest(fields: Record<string, string>, clientID: string, oldRefresh?: string, fetcher?: Fetcher): Promise<SpotifyToken> {
   const response = await http('https://accounts.spotify.com/api/token', { method: 'POST', body: new URLSearchParams(fields), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }, fetcher);
-  const body = z.object({ access_token: z.string().min(1), refresh_token: z.string().optional(), expires_in: z.number().positive() }).parse(await response.json());
+  const body = parseResponse(z.object({ access_token: z.string().min(1), refresh_token: z.string().optional(), expires_in: z.number().positive() }), await readJSON(response, 'Spotify 令牌接口'), 'Spotify 令牌接口');
   const refreshToken = body.refresh_token ?? oldRefresh;
   if (!refreshToken) throw new MSyncError('未获得 Spotify 刷新令牌');
   return { accessToken: body.access_token, refreshToken, expiresAt: new Date(Date.now() + body.expires_in * 1000).toISOString(), clientID };

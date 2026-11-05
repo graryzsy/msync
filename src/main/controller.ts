@@ -99,7 +99,8 @@ export class AppController {
   scan(): Promise<AppView> {
     return this.job(async () => {
       this.plan = null; this.services = this.configuredServices(); this.plan = await this.coordinator.preview(this.services); this.snapshots = this.plan.observations;
-      this.message = `扫描完成：${this.plan.operations.length} 项待同步，${this.plan.issues.length} 项待处理。`; return this.view();
+      const notes = this.plan.notes?.length ?? 0;
+      this.message = `扫描完成：${this.plan.operations.length} 项待同步，${this.plan.issues.length} 项待处理${notes ? `，${notes} 条扫描说明` : ''}。`; return this.view();
     });
   }
   apply(id: string): Promise<{ report: Awaited<ReturnType<SyncCoordinator['apply']>>; view: AppView }> {
