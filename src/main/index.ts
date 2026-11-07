@@ -48,6 +48,13 @@ else {
     handle('startNeteaseLogin', none, () => controller!.startNeteaseLogin());
     handle('checkNeteaseLogin', z.tuple([z.string().min(1).max(256)]), key => controller!.checkNeteaseLogin(key));
     handle('scan', none, () => controller!.scan()); handle('apply', uuid, id => controller!.apply(id));
+    handle('inspectSpotifyIssues', none, () => controller!.inspectSpotifyIssues());
+    handle('exportSpotifyDiagnostics', none, async () => {
+      const report = controller!.spotifyDiagnosticReport();
+      const selected = await dialog.showSaveDialog(window!, { defaultPath: 'msync-spotify-diagnostics.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+      if (selected.canceled || !selected.filePath) return false;
+      atomicWrite(selected.filePath, JSON.stringify(report, null, 2)); return true;
+    });
     handle('search', z.tuple([itemSchema, platformSchema]), (item, platform) => controller!.search(item, platform));
     handle('addMapping', z.tuple([z.object({ id: z.string().uuid(), kind: kindSchema, items: z.array(itemSchema).min(2).max(3), verified: z.literal(true), evidence: z.string().trim().min(1).max(8000) })]), (mapping: Mapping) => controller!.addMapping(mapping));
     handle('removeMapping', uuid, id => controller!.removeMapping(id));

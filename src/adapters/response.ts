@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { MSyncError } from '../core/models.js';
 
-export class APIDataError extends MSyncError {}
+export class APIDataError extends MSyncError {
+  constructor(message: string, readonly field?: string) { super(message); }
+}
 
 /** Report schema fields and types, never response values or complete payloads. */
 export function parseResponse<S extends z.ZodTypeAny>(schema: S, input: unknown, context: string): z.output<S> {
@@ -12,7 +14,7 @@ export function parseResponse<S extends z.ZodTypeAny>(schema: S, input: unknown,
   const detail = issue?.code === 'invalid_type' ? `预期 ${issue.expected}，收到 ${issue.received}`
     : issue?.code === 'too_small' && issue.type === 'string' && issue.minimum === 1 ? '文本为空，接口未提供可用名称或标识'
     : '字段校验未通过';
-  throw new APIDataError(`${context} 数据格式不符（字段 ${path}；${detail}）`);
+  throw new APIDataError(`${context} 数据格式不符（字段 ${path}；${detail}）`, path);
 }
 
 export async function readJSON(response: Response, context: string): Promise<unknown> {

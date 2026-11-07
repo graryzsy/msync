@@ -65,7 +65,7 @@ export default function App() {
         {error && <div role="alert" className="alert error"><AlertCircle size={18} /><span>{error}</span><button className="icon-button" onClick={() => setError('')} aria-label="关闭错误"><X size={15} /></button></div>}
         {notice && <div role="status" className="alert success"><CheckCircle2 size={18} /><span>{notice}</span></div>}
         {page === 'library' && <LibraryPage view={view} api={api} busy={busy} run={run} update={update} setPage={setPage} setView={setView} />}
-        {page === 'preview' && <PreviewPage view={view} api={api} busy={busy} run={run} update={update} setView={setView} />}
+        {page === 'preview' && <PreviewPage view={view} api={api} busy={busy} run={run} update={update} setView={setView} setNotice={setNotice} />}
         {page === 'mappings' && <MappingsPage view={view} api={api} busy={busy} update={update} />}
         {page === 'apple' && <ApplePage view={view} api={api} busy={busy} update={update} run={run} setPage={setPage} />}
         {page === 'settings' && <SettingsPage view={view} api={api} busy={busy} run={run} update={update} setView={setView} setNotice={setNotice} error={error} />}
@@ -124,7 +124,7 @@ function MappingModal({ source, target, busy, close, save }: { source: MusicItem
     }}><Check size={16} />保存对应关系</button></div>
   </Modal>;
 }
-function PreviewPage({ view, api, busy, run, update, setView }: Props & { setView(view: AppView): void }) {
+function PreviewPage({ view, api, busy, run, update, setView, setNotice }: Props & { setView(view: AppView): void; setNotice(message: string): void }) {
   const [confirm, setConfirm] = useState(false), [pending, setPending] = useState<{ title: string; message: string; url?: string }[]>([]);
   const additions = view.plan?.operations.filter(operation => operation.saved).length ?? 0;
   const removals = view.plan?.operations.filter(operation => !operation.saved).length ?? 0;
@@ -135,6 +135,22 @@ function PreviewPage({ view, api, busy, run, update, setView }: Props & { setVie
       {view.plan?.operations.length ? <div className="operation-list">{view.plan.operations.map(operation => <div className="operation" key={operation.id}><span className={operation.saved ? 'operation-icon add' : 'operation-icon remove'}>{operation.saved ? <Plus size={18} /> : <Heart size={18} />}</span><div><strong>{operation.item.title}</strong><span>{operation.item.release?.title ?? operation.item.artists.join('、')} · {operation.reason}</span></div><Brand platform={operation.item.platform} small /><span className={operation.saved ? 'green' : 'orange'}>{operation.saved ? '添加收藏' : '取消收藏'}</span></div>)}</div> : <div className="inline-empty"><CheckCircle2 size={30} /><h3>{view.plan ? '目前没有需要修改的收藏' : '还没有同步预览'}</h3><p>{view.plan ? '记录本次基线，以便下次识别真实变更。' : '扫描只读取数据，不会立即修改收藏。'}</p></div>}
     </section>
     {!!view.plan?.notes?.length && <section className="panel"><div className="panel-heading"><h2>扫描说明</h2></div>{view.plan.notes.map(note => <p className="panel-note" key={note}>{note}</p>)}</section>}
+    {!!view.spotifyScanIssues.length && <section className="panel spotify-diagnostics" aria-label="Spotify 异常条目">
+      <div className="panel-heading"><div><h2>Spotify 异常条目（{view.spotifyScanIssues.length}）</h2><p>逐项检查缺失信息，收藏状态保持未知</p></div><div className="heading-actions">
+        <button className="button secondary compact" disabled={busy} onClick={() => update(() => api.inspectSpotifyIssues())}>检查异常条目详情</button>
+        <button className="button subtle compact" disabled={busy} onClick={() => run(() => api.exportSpotifyDiagnostics(), saved => { if (saved) setNotice('Spotify 诊断已导出，不包含登录凭据。'); })}><Download size={14} />导出 Spotify 诊断</button>
+      </div></div>
+      <p className="panel-note">详情检查只读取 Spotify，不修改收藏。导出文件包含下列异常条目的音乐信息与检查结果，不包含 Token、Cookie 或账户资料。</p>
+      {view.spotifyScanIssues.map(issue => <div className="spotify-diagnostic-row" key={`${issue.kind}:${issue.position}`}>
+        <strong>{issue.source.name ?? '名称未返回'}</strong><small>{kindLabels[issue.kind]} · 第 {issue.position} 项 · ID：{issue.source.id ?? '未返回有效 ID'}</small>
+        {!!issue.source.artists.length && <p>艺人：{issue.source.artists.join('、')}</p>}
+        {issue.source.album?.name && <p>所属发行：{issue.source.album.name} · {issue.source.album.releaseDate ?? '未返回日期'}</p>}
+        <p>{issue.problem}</p>
+        {issue.inspection && <p className="diagnostic-finding">{issue.inspection.explanation}{issue.inspection.detail?.name ? ` 详情返回名称：${issue.inspection.detail.name}` : ''}</p>}
+        <details><summary>查看诊断字段</summary><pre>{JSON.stringify({ collection: issue.source, detail: issue.inspection }, null, 2)}</pre></details>
+        {issue.url && <button className="button subtle compact" disabled={busy} onClick={() => run(() => api.openExternal(issue.url!))}>打开 Spotify 页面<ArrowUpRight size={14} /></button>}
+      </div>)}
+    </section>}
     {!!view.plan?.issues.length && <section className="panel issues"><h2><AlertCircle size={18} />待处理项目</h2>{view.plan.issues.map(issue => <p key={issue.id}>{issue.message}</p>)}</section>}
     {!!pending.length && <section className="panel issues"><h2>尚未完成的操作</h2>{pending.map((item, index) => <div key={index}><strong>{item.title}</strong><p>{item.message}</p>{item.url && <button className="button secondary compact" onClick={() => run(() => api.openExternal(item.url!))}>打开平台页面<ArrowUpRight size={14} /></button>}</div>)}</section>}
     {confirm && <Modal title="执行本次同步？" close={() => setConfirm(false)}><div className="hint"><ShieldCheck size={20} /><span>{view.demo ? '当前为离线演示，操作只影响示例数据。' : `将添加 ${additions} 项、取消 ${removals} 项收藏。取消会传播到对应平台；未知或不支持的状态保留待处理。`}</span></div><div className="modal-actions"><button className="button subtle" onClick={() => setConfirm(false)}>返回检查</button><button className="button primary" disabled={busy} onClick={() => { const id = view.plan?.id; setConfirm(false); if (id) void run(() => api.apply(id), result => { setView(result.view); setPending(result.report.pending); }); }}>确认执行</button></div></Modal>}

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('msync', Object.freeze({
   connectSpotify: () => invoke('connectSpotify'), cancelLogin: () => invoke('cancelLogin'), disconnect: (platform: string) => invoke('disconnect', platform),
   startNeteaseLogin: () => invoke('startNeteaseLogin'), checkNeteaseLogin: (key: string) => invoke('checkNeteaseLogin', key),
   scan: () => invoke('scan'), apply: (id: string) => invoke('apply', id), search: (item: unknown, platform: string) => invoke('search', item, platform),
+  inspectSpotifyIssues: () => invoke('inspectSpotifyIssues'), exportSpotifyDiagnostics: () => invoke('exportSpotifyDiagnostics'),
   addMapping: (mapping: unknown) => invoke('addMapping', mapping), removeMapping: (id: string) => invoke('removeMapping', id),
   recordApple: (item: unknown, saved: boolean) => invoke('recordApple', item, saved), exportBackup: () => invoke('exportBackup'), importBackup: () => invoke('importBackup'),
   resetHistory: () => invoke('resetHistory'), openExternal: (url: string) => invoke('openExternal', url), demoMode: (enabled: boolean) => invoke('demoMode', enabled),

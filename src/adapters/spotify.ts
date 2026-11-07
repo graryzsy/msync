@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { itemSchema, kindLabels, MSyncError, type Kind, type MusicItem, type MusicService, type Snapshot, type WriteOutcome } from '../core/models.js';
-import { http, type Fetcher } from './http.js';
+import { http, HTTPError, type Fetcher } from './http.js';
 import { refreshToken, type SpotifyToken } from './spotify-oauth.js';
 import { assess } from '../core/matcher.js';
 import { APIDataError, parseResponse, readJSON } from './response.js';
+import { diagnoseSpotifyDetail, spotifyIssueURL, summarizeSpotifyEntity } from './spotify-diagnostics.js';
+import type { SpotifyIssueInspection, SpotifyScanIssue } from '../shared/spotify-diagnostics.js';
 
 const optionalText = z.string().nullish().transform(value => value ?? undefined);
 const optionalNumber = z.number().nonnegative().nullish().transform(value => value ?? undefined);
@@ -26,6 +28,7 @@ export function spotifyItem(input: unknown, kind: Kind, context = `Spotify ${kin
 export class SpotifyService implements MusicService {
   readonly platform = 'spotify';
   private refreshing?: Promise<void>;
+  private scanIssues = new Map<Kind, SpotifyScanIssue[]>();
   constructor(private token: SpotifyToken, private persist: (token: SpotifyToken) => void, private fetcher: Fetcher = fetch) {}
   private async request(path: string | URL, init: RequestInit = {}): Promise<Response> {
     const url = new URL(path, 'https://api.spotify.com/v1/');
@@ -38,6 +41,7 @@ export class SpotifyService implements MusicService {
     return http(url, { ...init, headers }, this.fetcher);
   }
   async snapshot(kind: Kind): Promise<Snapshot> {
+    const issues: SpotifyScanIssue[] = []; this.scanIssues.set(kind, issues);
     const user = parseResponse(z.object({ id: z.string().min(1), account_id: optionalText }), await readJSON(await this.request('me'), 'Spotify GET /me'), 'Spotify GET /me');
     const collection = kind === 'artist' ? 'me/following' : `me/${kind}s`;
     const context = `Spotify GET /${collection}`;
@@ -59,8 +63,9 @@ export class SpotifyService implements MusicService {
           items.push(spotifyItem(entity, kind, rowContext));
         } catch (error) {
           if (!(error instanceof APIDataError)) throw error;
-          const id = entity && typeof entity === 'object' && 'id' in entity ? entity.id : undefined;
-          const link = typeof id === 'string' && /^[A-Za-z0-9]{1,64}$/u.test(id) ? `。可在官方页面核实：https://open.spotify.com/${kind}/${id}` : '';
+          const source = summarizeSpotifyEntity(entity), url = spotifyIssueURL(kind, source.id);
+          issues.push({ kind, position: rowsRead, problem: error.message, field: error.field, source, url });
+          const link = url ? `。可在官方页面核实：${url}` : '';
           unreadable++; firstProblem ||= `${error.message}${link}`;
         }
       }
@@ -69,6 +74,34 @@ export class SpotifyService implements MusicService {
     if (new Set(items.map(item => item.id)).size !== items.length || total !== undefined && total !== rowsRead) throw new MSyncError('扫描期间 Spotify 收藏列表变化，请重新扫描');
     const notes = unreadable ? [`${kindLabels[kind]}中有 ${unreadable} 项缺少可用元数据，已读取其余 ${items.length} 项。未读到的条目状态保持未知，不据此推断取消收藏。首项原因：${firstProblem}`] : [];
     return { platform: this.platform, kind, accountID: user.account_id ?? user.id, capturedAt: new Date().toISOString(), items, savedIDs: items.map(item => item.id), isComplete: unreadable === 0, notes };
+  }
+  getScanIssues(): SpotifyScanIssue[] { return structuredClone([...this.scanIssues.values()].flat()); }
+  /** Read-only detail lookups. Never replace scan observations or repair library state here. */
+  async inspectScanIssues(input: SpotifyScanIssue[], pause: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms))): Promise<SpotifyScanIssue[]> {
+    const issues = structuredClone(input); let requests = 0, stopped = '';
+    const inspection = (finding: SpotifyIssueInspection['finding'], explanation: string, httpStatus?: number): SpotifyIssueInspection => ({ checkedAt: new Date().toISOString(), finding, explanation, httpStatus });
+    for (const issue of issues) {
+      if (issue.source.isLocal) { issue.inspection = inspection('local_file', '收藏列表明确标记为本地文件，无法确认可跨平台对应的发行版本。'); continue; }
+      const id = issue.source.id;
+      if (!id || !spotifyIssueURL(issue.kind, id)) { issue.inspection = inspection('not_checked', '收藏记录没有有效的 Spotify 条目 ID，无法请求单项详情。'); continue; }
+      if (stopped || requests >= 50) { issue.inspection = inspection('not_checked', stopped || '本次最多检查 50 个条目，其他条目保留原始诊断。'); continue; }
+      if (requests) await pause(250);
+      requests++;
+      try {
+        const body = await readJSON(await this.request(`${issue.kind}s/${id}`, { signal: AbortSignal.timeout(20_000) }), 'Spotify 单项详情');
+        let problem: string | undefined;
+        try { spotifyItem(body, issue.kind, 'Spotify 单项详情'); }
+        catch (error) { if (!(error instanceof APIDataError)) throw error; problem = error.message; }
+        issue.inspection = diagnoseSpotifyDetail(issue, summarizeSpotifyEntity(body), problem);
+      } catch (error) {
+        const status = error instanceof HTTPError ? error.status : undefined;
+        const explanation = status === 404 || status === 410 ? '当前账号请求此 ID 未找到可用条目；仅凭此响应无法确定原曲名或全球下架原因。'
+          : error instanceof MSyncError ? error.message : '单项详情请求未完成，请稍后重试。';
+        issue.inspection = inspection('request_failed', explanation, status);
+        if (status !== 404 && status !== 410) stopped = '前一请求失败，已暂停后续详情查询，避免重复请求或触发限流。';
+      }
+    }
+    return issues;
   }
   async search(item: MusicItem): Promise<MusicItem[]> {
     const url = new URL('https://api.spotify.com/v1/search');

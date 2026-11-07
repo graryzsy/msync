@@ -1,4 +1,5 @@
 import type { ApplyReport, Kind, Mapping, MusicItem, Platform, Snapshot, StoredState, SyncPlan } from '../core/models.js';
+import type { SpotifyScanIssue } from './spotify-diagnostics.js';
 
 export interface Settings { spotifyClientID: string; appleMode: 'native' | 'web' | 'disabled'; appleWebAccountID: string }
 export interface Connection { platform: Platform; connected: boolean; mode: string; detail: string }
@@ -6,6 +7,7 @@ export interface AppView {
   settings: Settings; state: StoredState; snapshots: Snapshot[]; plan: SyncPlan | null; connections: Connection[];
   demo: boolean; os: string; credentialStorage: 'secure' | 'session'; message: string;
   manualApple: { item: MusicItem; saved: boolean; checkedAt: string }[];
+  spotifyScanIssues: SpotifyScanIssue[];
 }
 export interface SearchResult { item: MusicItem; decision: 'compatible' | 'different' | 'needsReview'; evidence: string[] }
 export interface DesktopAPI {
@@ -17,6 +19,8 @@ export interface DesktopAPI {
   startNeteaseLogin(): Promise<{ key: string; image: string }>;
   checkNeteaseLogin(key: string): Promise<{ code: number; view: AppView }>;
   scan(): Promise<AppView>;
+  inspectSpotifyIssues(): Promise<AppView>;
+  exportSpotifyDiagnostics(): Promise<boolean>;
   apply(planID: string): Promise<{ report: ApplyReport; view: AppView }>;
   search(item: MusicItem, platform: Platform): Promise<SearchResult[]>;
   addMapping(mapping: Mapping): Promise<AppView>;

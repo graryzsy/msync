@@ -2,6 +2,7 @@ import { test, expect, _electron as electron } from '@playwright/test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import type { SpotifyScanIssue } from '../src/shared/spotify-diagnostics.js';
 
 test('desktop demo, strict edition review, deletion propagation and isolated credentials', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'msync-electron-test-'));
@@ -131,5 +132,49 @@ test('scan limitations and partial metadata are explained separately from reques
     const failures = page.locator('section').filter({ has: page.getByRole('heading', { name: '待处理项目', exact: true }) });
     await expect(notes).toContainText('网页确认模式'); await expect(notes).toContainText('状态保持未知');
     await expect(failures).toContainText('login_status'); await expect(failures).not.toContainText('Apple Music');
+  } finally { await application.close(); rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+});
+
+test('all Spotify diagnostic rows can be inspected and exported from the desktop preview', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'msync-spotify-diagnostics-test-'));
+  const extra = process.platform === 'linux' ? ['--no-sandbox', '--disable-gpu', '--ozone-platform=headless'] : [];
+  const application = await electron.launch({
+    ...(process.env.MSYNC_ELECTRON_EXECUTABLE ? { executablePath: process.env.MSYNC_ELECTRON_EXECUTABLE } : {}),
+    args: [...extra, ...(process.env.MSYNC_ELECTRON_EXECUTABLE ? [] : [resolve('.')])],
+    env: { ...process.env, MSYNC_DATA_DIR: directory, XDG_CACHE_HOME: join(directory, 'cache') }, timeout: 30_000
+  });
+  try {
+    const page = await application.firstWindow(), errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await expect(page.getByRole('heading', { name: '收藏好音乐，不必重复收藏。' })).toBeVisible();
+    const view = await page.evaluate(() => window.msync!.getState());
+    const issues: SpotifyScanIssue[] = Array.from({ length: 15 }, (_, index) => ({ kind: 'track', position: 711 + index, field: 'name', problem: '文本为空，接口未提供可用名称或标识',
+      url: `https://open.spotify.com/track/missing${index}`, source: { id: `missing${index}`, recordState: 'object', nameState: 'empty', artists: ['Fixture Artist'], isPlayable: false } }));
+    // Only fixtures in an isolated process; no account or external music requests.
+    await application.evaluate(({ ipcMain }, input) => {
+      const state = { ...input.view, spotifyScanIssues: input.issues };
+      for (const name of ['scan', 'inspectSpotifyIssues', 'exportSpotifyDiagnostics']) ipcMain.removeHandler(`msync:${name}`);
+      ipcMain.handle('msync:scan', () => ({ ok: true, value: state }));
+      ipcMain.handle('msync:inspectSpotifyIssues', () => ({ ok: true, value: { ...state, spotifyScanIssues: state.spotifyScanIssues.map(issue => ({ ...issue,
+        inspection: { checkedAt: new Date().toISOString(), finding: 'empty_metadata', explanation: '单项详情也未提供可用名称，无法确认发行版本。' }
+      })) } }));
+      ipcMain.handle('msync:exportSpotifyDiagnostics', () => ({ ok: true, value: true }));
+    }, { view, issues });
+    await page.getByRole('button', { name: '扫描收藏', exact: true }).click();
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '同步预览' }).click();
+    const diagnostics = page.getByRole('region', { name: 'Spotify 异常条目', exact: true });
+    await expect(diagnostics.getByRole('heading', { name: 'Spotify 异常条目（15）' })).toBeVisible();
+    await expect(diagnostics.locator('.spotify-diagnostic-row')).toHaveCount(15);
+    await expect(diagnostics.locator('.spotify-diagnostic-row').last()).toContainText('missing14');
+    await diagnostics.getByRole('button', { name: '检查异常条目详情' }).click();
+    await expect(diagnostics.locator('.diagnostic-finding')).toHaveCount(15);
+    await expect(diagnostics.locator('.diagnostic-finding').first()).toContainText('单项详情也未提供可用名称');
+    await diagnostics.locator('.spotify-diagnostic-row').first().getByText('查看诊断字段', { exact: true }).click();
+    await expect(diagnostics.locator('pre').first()).toContainText('"isPlayable": false');
+    await diagnostics.getByRole('button', { name: '导出 Spotify 诊断' }).click();
+    await expect(page.getByRole('status')).toHaveText('Spotify 诊断已导出，不包含登录凭据。');
+    await diagnostics.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'artifacts/ui/spotify-diagnostics.png' });
+    expect(errors).toEqual([]);
   } finally { await application.close(); rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });

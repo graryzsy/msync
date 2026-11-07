@@ -14,6 +14,7 @@ import { NeteaseService } from '../adapters/netease.js';
 import { SpotifyService } from '../adapters/spotify.js';
 import { SpotifyLogin, tokenSchema } from '../adapters/spotify-oauth.js';
 import type { AppView, Connection, SearchResult, Settings } from '../shared/api.js';
+import type { SpotifyDiagnosticReport, SpotifyScanIssue } from '../shared/spotify-diagnostics.js';
 import { CredentialVault } from './credentials.js';
 
 const settingsSchema = z.object({ spotifyClientID: z.string(), appleMode: z.enum(['native', 'web', 'disabled']), appleWebAccountID: z.string().min(1) });
@@ -21,6 +22,9 @@ export class AppController {
   private settings: Settings;
   private plan: SyncPlan | null = null;
   private snapshots: Snapshot[] = [];
+  private spotifyScanIssues: SpotifyScanIssue[] = [];
+  private spotifyScannedAt?: string;
+  private spotifyDiagnosticCollections: SpotifyDiagnosticReport['collections'] = [];
   private services: MusicService[] = [];
   private coordinator: SyncCoordinator;
   private demoStore?: StateStore;
@@ -50,8 +54,9 @@ export class AppController {
       { platform: 'appleMusic', connected: !!this.demoStore || this.settings.appleMode !== 'disabled' && (this.settings.appleMode !== 'native' || process.platform === 'darwin'), mode: this.settings.appleMode === 'native' ? '本机音乐 App' : this.settings.appleMode === 'web' ? '网页确认' : '未启用', detail: this.settings.appleMode === 'native' ? 'macOS 专用 · 资料库内歌曲与专辑星标' : '三平台通用 · 需要在网页操作并手动确认状态' },
       { platform: 'netease', connected: !!this.demoStore || !!this.vault.get('netease'), mode: '社区接口', detail: '扫码登录 · 歌曲、专辑与艺人收藏' }
     ];
-    return { settings: this.settings, state: this.store.load(), snapshots: this.snapshots, plan: this.plan, connections, demo: !!this.demoStore, os: process.platform, credentialStorage: this.vault.mode, message: this.message, manualApple: this.manualApple.list() };
+    return { settings: this.settings, state: this.store.load(), snapshots: this.snapshots, plan: this.plan, connections, demo: !!this.demoStore, os: process.platform, credentialStorage: this.vault.mode, message: this.message, manualApple: this.manualApple.list(), spotifyScanIssues: structuredClone(this.spotifyScanIssues) };
   }
+  private clearSpotifyDiagnostics(): void { this.spotifyScanIssues = []; this.spotifyScannedAt = undefined; this.spotifyDiagnosticCollections = []; }
   private configuredServices(): MusicService[] {
     if (this.demoServices) return this.demoServices;
     const services: MusicService[] = [], token = this.vault.get('spotify');
@@ -68,19 +73,19 @@ export class AppController {
     return this.job(async () => {
       if (this.demoStore) throw new MSyncError('请先退出离线演示再修改真实账户设置');
       this.settings = { ...this.settings, ...input }; atomicWrite(join(this.directory, 'settings.json'), JSON.stringify(this.settings));
-      this.plan = null; this.services = []; this.message = '设置已保存，请重新扫描。'; return this.view();
+      this.clearSpotifyDiagnostics(); this.plan = null; this.services = []; this.message = '设置已保存，请重新扫描。'; return this.view();
     });
   }
   connectSpotify(): Promise<AppView> {
     return this.job(async () => {
       if (this.demoStore) throw new MSyncError('请先退出离线演示再连接账户');
       const token = await this.login.connect(this.settings.spotifyClientID, this.openURL);
-      this.vault.set('spotify', JSON.stringify(token)); this.plan = null; this.message = 'Spotify 已连接。'; return this.view();
+      this.vault.set('spotify', JSON.stringify(token)); this.clearSpotifyDiagnostics(); this.plan = null; this.message = 'Spotify 已连接。'; return this.view();
     });
   }
   cancelLogin(): void { this.login.cancel(); }
   disconnect(platform: Platform): Promise<AppView> {
-    return this.job(async () => { if (this.demoStore) throw new MSyncError('离线演示不会断开真实账户，请先退出演示'); if (platform !== 'appleMusic') this.vault.set(platform, undefined); this.plan = null; this.services = []; this.message = '已移除本机登录凭据，平台收藏保持原样。'; return this.view(); });
+    return this.job(async () => { if (this.demoStore) throw new MSyncError('离线演示不会断开真实账户，请先退出演示'); if (platform !== 'appleMusic') this.vault.set(platform, undefined); if (platform === 'spotify') this.clearSpotifyDiagnostics(); this.plan = null; this.services = []; this.message = '已移除本机登录凭据，平台收藏保持原样。'; return this.view(); });
   }
   startNeteaseLogin(): Promise<{ key: string; image: string }> {
     return this.job(async () => { if (this.demoStore) throw new MSyncError('请先退出演示'); const qr = await NeteaseService.startLogin(); this.qrKey = qr.key; return qr; });
@@ -98,10 +103,33 @@ export class AppController {
   }
   scan(): Promise<AppView> {
     return this.job(async () => {
-      this.plan = null; this.services = this.configuredServices(); this.plan = await this.coordinator.preview(this.services); this.snapshots = this.plan.observations;
+      this.clearSpotifyDiagnostics(); this.plan = null; this.services = this.configuredServices(); this.plan = await this.coordinator.preview(this.services); this.snapshots = this.plan.observations;
+      const spotify = this.services.find(service => service instanceof SpotifyService);
+      const collections = this.snapshots.filter(snapshot => snapshot.platform === 'spotify');
+      if (spotify instanceof SpotifyService && collections.length) {
+        this.spotifyScanIssues = spotify.getScanIssues().filter(issue => collections.some(snapshot => snapshot.kind === issue.kind));
+        this.spotifyScannedAt = new Date().toISOString();
+        this.spotifyDiagnosticCollections = collections.map(snapshot => ({ kind: snapshot.kind, readableCount: snapshot.items.length,
+          issueCount: this.spotifyScanIssues.filter(issue => issue.kind === snapshot.kind).length, isComplete: snapshot.isComplete }));
+      }
       const notes = this.plan.notes?.length ?? 0;
       this.message = `扫描完成：${this.plan.operations.length} 项待同步，${this.plan.issues.length} 项待处理${notes ? `，${notes} 条扫描说明` : ''}。`; return this.view();
     });
+  }
+  inspectSpotifyIssues(): Promise<AppView> {
+    return this.job(async () => {
+      if (this.demoStore || !this.spotifyScanIssues.length) throw new MSyncError('请先扫描真实 Spotify 收藏，确认有异常条目后再检查');
+      const spotify = this.configuredServices().find(service => service instanceof SpotifyService);
+      if (!(spotify instanceof SpotifyService)) throw new MSyncError('请先连接 Spotify 并重新扫描');
+      this.spotifyScanIssues = await spotify.inspectScanIssues(this.spotifyScanIssues);
+      this.message = 'Spotify 异常条目详情检查完成，可导出诊断文件。'; return this.view();
+    });
+  }
+  spotifyDiagnosticReport(): SpotifyDiagnosticReport {
+    if (this.busy) throw new MSyncError('请等待当前任务完成后导出诊断');
+    if (!this.spotifyScannedAt || !this.spotifyScanIssues.length) throw new MSyncError('请先扫描 Spotify 收藏中的异常条目');
+    return structuredClone({ format: 'msync-spotify-diagnostics', version: 1, createdAt: new Date().toISOString(), scannedAt: this.spotifyScannedAt,
+      collections: this.spotifyDiagnosticCollections, issues: this.spotifyScanIssues });
   }
   apply(id: string): Promise<{ report: Awaited<ReturnType<SyncCoordinator['apply']>>; view: AppView }> {
     return this.job(async () => {
@@ -128,11 +156,11 @@ export class AppController {
       this.manualApple.record(item, saved); this.plan = null; this.message = '已记录你确认的网页状态，请重新扫描以传播变更。'; return this.view();
     });
   }
-  importBackup(input: unknown): Promise<AppView> { return this.job(async () => { this.store.importState(input); this.plan = null; this.snapshots = []; this.message = '已导入对应关系和历史，请检查账户后重新扫描。'; return this.view(); }); }
-  resetHistory(): Promise<AppView> { return this.job(async () => { this.store.reset(); this.plan = null; this.snapshots = []; this.message = '本地基线已重置，平台收藏保持原样。'; return this.view(); }); }
+  importBackup(input: unknown): Promise<AppView> { return this.job(async () => { this.store.importState(input); this.clearSpotifyDiagnostics(); this.plan = null; this.snapshots = []; this.message = '已导入对应关系和历史，请检查账户后重新扫描。'; return this.view(); }); }
+  resetHistory(): Promise<AppView> { return this.job(async () => { this.store.reset(); this.clearSpotifyDiagnostics(); this.plan = null; this.snapshots = []; this.message = '本地基线已重置，平台收藏保持原样。'; return this.view(); }); }
   demoMode(enabled: boolean): Promise<AppView> {
     return this.job(async () => {
-      this.plan = null; this.snapshots = []; this.services = [];
+      this.clearSpotifyDiagnostics(); this.plan = null; this.snapshots = []; this.services = [];
       if (enabled && !this.demoStore) { const demo = await createDemo(); this.demoStore = demo.store; this.demoServices = demo.services; }
       if (!enabled) { this.demoStore?.close(); this.demoStore = undefined; this.demoServices = undefined; }
       this.coordinator = new SyncCoordinator(this.store);
