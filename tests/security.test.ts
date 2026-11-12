@@ -4,17 +4,11 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CredentialVault, type SecretCipher } from '../src/main/credentials.js';
-import { allowedExternalURL, trustedRenderer } from '../src/main/security.js';
+import { allowedExternalURL } from '../src/main/security.js';
 
 test('external links are restricted to music providers over HTTPS', () => {
   assert.equal(allowedExternalURL('https://music.apple.com/cn/album/example/123').hostname, 'music.apple.com');
   for (const address of ['file:///etc/passwd', 'javascript:alert(1)', 'https://music.apple.com.evil.example/x', 'https://evil.example', 'https://user:pass@music.apple.com/x', 'https://music.apple.com:444/x']) assert.throws(() => allowedExternalURL(address));
-});
-test('IPC is limited to the expected renderer, not arbitrary local or remote pages', () => {
-  assert.equal(trustedRenderer('file:///app/dist/renderer/index.html', 'file:///app/dist/renderer/index.html'), true);
-  assert.equal(trustedRenderer('file:///tmp/other.html', 'file:///app/dist/renderer/index.html'), false);
-  assert.equal(trustedRenderer('http://127.0.0.1:5173/', '', 'http://127.0.0.1:5173'), true);
-  assert.equal(trustedRenderer('http://127.0.0.1:5173/untrusted', '', 'http://127.0.0.1:5173'), false);
 });
 test('Linux basic_text backend never persists credentials as a plaintext fallback', () => {
   const directory = mkdtempSync(join(tmpdir(), 'msync vault ')); let encrypted = false;

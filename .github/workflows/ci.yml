@@ -18,7 +18,9 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npm run build
-      - name: Desktop integration test
+      - name: Install browser for web tests
+        run: npx playwright install --with-deps chromium
+      - name: Browser and background service integration test
         run: npm run test:ui
       - name: Package native application directory
         if: runner.os != 'macOS'

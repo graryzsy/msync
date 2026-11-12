@@ -1,10 +1,10 @@
 # MSync
 
-**TypeScript + Electron + React** 编写的音乐收藏同步桌面应用。macOS、Windows、Linux 共享界面、同步核心与平台适配器。SQLite 使用 WebAssembly 实现，没有需要针对 CPU 架构重新编译的数据库插件。
+**React 网页前端 + TypeScript 本地同步后台**。界面在系统浏览器中打开；后台继续使用 Electron/Node 运行时，以沿用系统安全存储、Spotify 本机授权和 Music.app 自动化。macOS、Windows、Linux 共享同步核心与平台适配器。SQLite 使用 WebAssembly 实现，没有需要针对 CPU 架构重新编译的数据库插件。
 
 以 Spotify 作为首次基准；对已确认对应关系的收藏，识别并传播实际观察到的新增与取消。歌曲点赞、专辑收藏、艺人关注分别记录，保留发行版本与完整发行日期的严格约束。
 
-当前版本已移除 Swift 工程与 SwiftUI 界面。构建业务代码无需 Swift、Xcode 或付费 Apple Developer 会员。安装包自带 Electron/Node 运行时，**部署电脑无需额外安装 Node.js**。
+构建业务代码无需 Swift、Xcode 或付费 Apple Developer 会员。安装包自带后台所需的 Electron/Node 运行时，**部署电脑无需额外安装 Node.js**。前端通过 HTTP 调用后台，不再依赖 Electron 窗口或 preload / IPC。三个音乐平台的接入方式保持原样。
 
 ## 平台接入的实际能力
 
@@ -32,11 +32,41 @@ npm run build
 npm start
 ```
 
-开发模式使用 Vite 页面热更新；主进程改动后重新启动：
+启动后会自动打开系统浏览器，正式运行地址为 `http://127.0.0.1:19427`。首次自动打开时通过 URL 片段完成网页会话初始化，随后移除片段；手动访问时输入启动终端显示的“网页访问口令”。该口令用于访问 MSync，与音乐平台的 Token、Cookie 无关。
+
+开发模式使用 Vite 页面热更新，地址为 `http://127.0.0.1:5173`，后台固定监听 19427 并由 Vite 转发接口。后台代码改动后重新启动：
 
 ```sh
 npm run dev
 ```
+
+关闭浏览器不会退出后台，已提交的任务会继续；刷新或重新打开网页可以查看后台任务状态。同一时刻只允许一个扫描、同步或设置操作，其他浏览器会显示忙碌状态，防止重复提交。任务状态在本次后台进程内保留，退出后台后请重新扫描。通过托盘菜单打开网页、复制访问链接或退出后台；从终端运行时也可按 `Ctrl+C` 停止。
+
+## 局域网访问
+
+默认只监听本机回环地址。若需要在其他电脑浏览器中访问，正式构建后在后台电脑启动：
+
+```sh
+# macOS / Linux
+MSYNC_WEB_HOST=0.0.0.0 npm start
+```
+
+Windows PowerShell：
+
+```powershell
+$env:MSYNC_WEB_HOST="0.0.0.0"
+npm start
+```
+
+其他设备打开 `http://后台电脑的局域网IP:19427`，输入后台终端显示的访问口令。所有浏览器共用后台的同一组账户、收藏状态与同步基线；这是个人工作空间，没有多用户账户隔离。网页适配桌面和窄屏浏览器。
+
+可选环境变量：`MSYNC_WEB_PORT` 设置正式服务端口；`MSYNC_WEB_TOKEN` 设置 24 至 256 字符的固定访问口令，省略时每次启动随机生成。网页会话有效期为 8 小时，重启后台后旧会话失效。托盘复制的访问链接包含初始化会话的口令。
+
+**Spotify 首次授权仍需在后台所在电脑的浏览器完成**，回调地址继续是 `http://127.0.0.1:19428/callback`，无需更改 Developer Dashboard 配置。网易云仍由手机扫描后台生成的二维码并手动检查状态。Apple Music 本机模式操作后台 Mac 的 Music.app，后台电脑需要登录用户会话并允许自动化；从 Windows 浏览器访问 Mac 后台不会改为操作 Windows 上的音乐软件。
+
+此版面向本机和可信局域网，尚未提供公网 HTTPS 部署或多用户服务配置。
+
+## 离线演示
 
 首页有“体验离线演示”，使用独立的内存数据库与模拟平台，不连接真实账户。进入“同步预览”，可以模拟 Apple Music 取消第一首歌曲的收藏，查看另外两平台的取消操作并执行，再模拟重新收藏。退出演示后回到原来的个人记录。
 
@@ -80,7 +110,7 @@ npm run package:linux
 npm run package:dir
 ```
 
-三个系统不共用同一个安装包，但共享 TypeScript 业务代码。GitHub Actions 配置 Windows、Linux、macOS 的测试、桌面集成检查和打包；macOS 作业构建 Universal `.zip`。是否通过以工作流的实际运行结果为准。
+三个系统不共用同一个后台安装包，但共享 TypeScript 业务代码，前端均由浏览器打开。GitHub Actions 配置 Windows、Linux、macOS 的测试、浏览器与后台集成检查和打包；macOS 作业构建 Universal `.zip`。是否通过以工作流的实际运行结果为准。
 
 ## 首次使用
 
@@ -127,7 +157,7 @@ AI 图像辅助尚未接入，不调用收费模型。后续 AI 只能提供候�
 
 凭据通过 Electron `safeStorage` 调用 macOS 钥匙串、Windows 系统加密或 Linux 密钥环，写入 `credentials.enc`。Linux 缺少密钥环或使用 `basic_text` 后端时，**只在内存保留本次登录，不保存明文凭据**。
 
-界面通过隔离 preload 与白名单 IPC 调用服务，没有 Node.js 访问能力，也不会收到 Token/Cookie。外部链接限制为受支持音乐平台的 HTTPS 页面。
+网页通过 HTTP 接口调用后台，没有 Node.js 访问能力，也不会收到音乐平台的 Token/Cookie。接口校验网页会话、Host、Origin 和专用请求头，拒绝其他网站触发操作；会话 Cookie 使用 HttpOnly 和 SameSite=Strict。静态服务仅提供构建后的网页资源，不提供数据库、凭据文件或源代码。外部链接限制为受支持音乐平台的 HTTPS 页面。备份与诊断通过浏览器下载，导入使用浏览器文件选择并确认替换；重置基线保留确认步骤。
 
 备份包含对应关系与历史，不包含凭据；另一电脑导入后需单独登录。导入不直接执行备份中的未完成写入。旧版导出的 JSON 也可导入，**不会自动读取旧钥匙串或覆盖旧 `state.sqlite`**。网页确认记录位于 `apple-web.json`，目前不包含在历史备份中，迁移到另一台电脑后应重新核实。
 
@@ -142,15 +172,16 @@ npm run build
 npm run test:ui
 ```
 
-界面测试使用项目中的 Electron，无需另行下载 Playwright 浏览器。测试使用独立临时目录和离线演示；Linux 使用无显示器的 Ozone 后端。设置 `MSYNC_ELECTRON_EXECUTABLE` 可对已打包应用运行相同的桌面测试。
+首次运行浏览器测试先执行 `npx playwright install chromium`。测试会启动实际的 Electron 后台和独立 Chromium 浏览器，使用临时数据目录和离线演示；扫码、异常数据使用测试夹具，不访问真实音乐账户。Linux 后台使用无显示器的 Ozone 模式。设置 `MSYNC_CHROMIUM_EXECUTABLE` 可使用已安装的 Chromium；设置 `MSYNC_ELECTRON_EXECUTABLE` 可对已打包后台运行相同测试。
 
 ```text
 src/core/        共享模型、严格匹配、计划、SQLite 与执行协调
 src/adapters/    Spotify / 网易云 / Apple Music 接入
-src/main/        Electron 主进程、安全存储、白名单 IPC
-src/renderer/    React 界面
-src/shared/      界面与主进程接口
+src/main/        本地后台启动、系统托盘、既有控制器与凭据存储
+src/server/      HTTP 接口、网页会话、静态资源与后台任务
+src/renderer/    React 网页、HTTP 客户端与浏览器文件操作
+src/shared/      网页与后台接口、任务类型、外链校验
 resources/      可选 macOS Music.app JavaScript 脚本
 tests/          规则、持久化、授权、适配器与安全边界测试
-e2e/            真实 Electron 桌面流程测试
+e2e/            浏览器与实际后台的流程测试
 ```

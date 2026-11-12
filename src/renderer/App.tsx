@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AlertCircle, ArrowDownUp, ArrowUpRight, Check, CheckCircle2, ChevronRight, Disc3, Download, Globe, Headphones, Heart, Info, Library, Link2, Loader2, Mic2, Music2, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Upload, X } from 'lucide-react';
 import { exactDate } from '../core/matcher.js';
 import { itemKey, kindLabels, kinds, labels, mappingTitle, platforms, type Kind, type Mapping, type MusicItem, type Platform } from '../core/models.js';
-import type { AppView, DesktopAPI, SearchResult } from '../shared/api.js';
+import type { AppView, AppAPI, SearchResult, WebTaskSummary } from '../shared/api.js';
+import { api } from './api.js';
 
 type Page = 'library' | 'preview' | 'mappings' | 'apple' | 'settings';
-const api = window.msync;
+let initialSession: Promise<boolean> | undefined;
 const pageTitles: Record<Page, string> = { library: '音乐收藏', preview: '同步预览', mappings: '对应关系', apple: 'Apple Music 网页确认', settings: '账户与设置' };
 function Brand({ platform, small = false }: { platform: Platform; small?: boolean }) {
   return <span className={`brand brand-${platform}${small ? ' small' : ''}`} aria-label={labels[platform]}>{platform === 'spotify' ? <span className="spotify-waves">≋</span> : platform === 'appleMusic' ? <Music2 size={small ? 13 : 22} /> : <span className="netease-mark">N</span>}</span>;
@@ -29,12 +30,56 @@ function ItemFacts({ item }: { item: MusicItem }) {
   </div>;
 }
 export default function App() {
+  const [authenticated, setAuthenticated] = useState<boolean>(), [token, setToken] = useState('');
+  const [error, setError] = useState(''), [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let disposed = false;
+    const expired = () => { setAuthenticated(false); setError('网页会话已结束，请重新输入访问口令。'); };
+    window.addEventListener('msync-session-expired', expired);
+    initialSession ??= (async () => {
+      const access = new URLSearchParams(window.location.hash.slice(1)).get('msync-access');
+      if (access) { window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); await api.loginWebSession(access); }
+      return (await api.getSession()).authenticated;
+    })();
+    initialSession.then(value => { if (!disposed) setAuthenticated(value); }).catch(error => { if (!disposed) { setError(error.message); setAuthenticated(false); } });
+    return () => { disposed = true; window.removeEventListener('msync-session-expired', expired); };
+  }, []);
+  if (authenticated === undefined) return <div className="startup"><Loader2 className="spin" size={32} /><p>正在连接 MSync 后台…</p></div>;
+  if (authenticated) return <Workspace />;
+  return <div className="access-screen"><form className="access-card" onSubmit={async event => {
+    event.preventDefault(); if (busy) return; setBusy(true); setError('');
+    try { await api.loginWebSession(token.trim()); setToken(''); setAuthenticated(true); }
+    catch (error) { setError(error instanceof Error ? error.message : '连接未完成'); } finally { setBusy(false); }
+  }}><div className="logo"><AudioLogo /></div><h1>MSync 网页访问</h1><p>输入后台启动时显示的网页访问口令。音乐平台的登录凭据保留在后台。</p>
+    <label className="field">网页访问口令<input type="password" autoComplete="current-password" value={token} onChange={event => setToken(event.target.value)} autoFocus required disabled={busy} /></label>
+    {error && <p role="alert" className="orange">{error}</p>}<button className="button primary full" type="submit" disabled={busy || !token.trim()}>{busy ? '正在连接…' : '打开工作空间'}</button>
+  </form></div>;
+}
+function Workspace() {
   const [view, setView] = useState<AppView>();
-  const [page, setPage] = useState<Page>('library');
-  const [busy, setBusy] = useState(false);
+  const [page, setPage] = useState<Page>(() => { const value = new URLSearchParams(window.location.search).get('page'); return value && Object.hasOwn(pageTitles, value) ? value as Page : 'library'; });
+  useEffect(() => { const url = new URL(window.location.href); url.searchParams.set('page', page); window.history.replaceState(null, '', url); }, [page]);
+  const [localBusy, setBusy] = useState(false), [remoteTask, setRemoteTask] = useState<WebTaskSummary | null>(null);
+  const busy = localBusy || remoteTask?.state === 'running';
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  useEffect(() => { if (api) api.getState().then(setView).catch(error => setError(String(error.message))); }, []);
+  useEffect(() => { api.getState().then(setView).catch(error => setError(String(error.message))); }, []);
+  useEffect(() => {
+    let disposed = false, observed = false, timer: ReturnType<typeof setTimeout> | undefined, previous: WebTaskSummary | null = null;
+    const poll = async () => {
+      try {
+        const task = await api.getActivity(); if (disposed) return; setRemoteTask(task);
+        if (observed && task && task.state !== 'running' && (task.id !== previous?.id || previous.state === 'running')) {
+          const state = await api.getState(); if (disposed) return; setView(state);
+          if (task.error) setError(task.error);
+        }
+        if (!observed && task?.error) setError(task.error);
+        previous = task; observed = true;
+      } catch (error) { if (!disposed) setError(error instanceof Error ? error.message : '无法连接后台'); }
+      finally { if (!disposed) timer = setTimeout(poll, 750); }
+    };
+    void poll(); return () => { disposed = true; clearTimeout(timer); };
+  }, []);
   async function run<T>(work: () => Promise<T>, after?: (result: T) => void): Promise<void> {
     if (busy) return; setBusy(true); setError(''); setNotice('');
     try { const result = await work(); after?.(result); }
@@ -42,7 +87,6 @@ export default function App() {
     finally { setBusy(false); }
   }
   const update = (work: () => Promise<AppView>): Promise<void> => run(work, setView);
-  if (!api) return <div className="startup"><Music2 size={42} /><h1>MSync</h1><p>请从桌面应用启动，以连接本机同步服务。</p></div>;
   if (!view) return <div className="startup"><Loader2 className="spin" size={32} /><p>{error || '正在打开你的音乐收藏…'}</p></div>;
   const navigation = [
     { id: 'library' as Page, title: '音乐收藏', icon: Library }, { id: 'preview' as Page, title: '同步预览', icon: ArrowDownUp },
@@ -51,15 +95,15 @@ export default function App() {
   return <div className="app-shell">
     <aside className="sidebar"><div className="wordmark"><div className="logo"><AudioLogo /></div><span>msync<span className="wordmark-dot">.</span></span></div>
       <div className="sidebar-caption">你的音乐，连接在一起</div>
-      <nav aria-label="主导航">{navigation.map(({ id, title, icon: Icon }) => <button key={id} className={page === id ? 'nav-item active' : 'nav-item'} onClick={() => setPage(id)}><Icon size={19} /><span>{title}</span>{id === 'preview' && !!view.plan?.operations.length && <b>{view.plan.operations.length}</b>}</button>)}</nav>
+      <nav aria-label="主导航">{navigation.map(({ id, title, icon: Icon }) => <button key={id} className={page === id ? 'nav-item active' : 'nav-item'} onClick={() => setPage(id)}><Icon size={19} /><span>{title}</span>{id === 'preview' && !!view.plan?.operations.length && <b>{view.plan.operations.length}</b>}</button>)}<button className="nav-item mobile-settings" onClick={() => setPage('settings')}><Settings2 size={19} /><span>账户与设置</span></button></nav>
       <div className="sidebar-divider" /><div className="sidebar-label">音乐平台</div>
       {view.connections.map(connection => <button className="sidebar-platform" key={connection.platform} onClick={() => setPage('settings')}><Brand platform={connection.platform} small /><span>{labels[connection.platform]}</span><i className={connection.connected ? 'status-dot online' : 'status-dot'} /></button>)}
-      <div className="sidebar-bottom"><div className="local-note"><ShieldCheck size={17} /><div>在本机管理收藏<span>{view.credentialStorage === 'secure' ? '登录凭据通过系统安全存储保护' : '登录凭据仅在本次运行中保留'}</span></div></div>
+      <div className="sidebar-bottom"><div className="local-note"><ShieldCheck size={17} /><div>由后台管理收藏<span>{view.credentialStorage === 'secure' ? '登录凭据通过系统安全存储保护' : '登录凭据仅在本次运行中保留'}</span></div></div>
         <button className={page === 'settings' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('settings')}><Settings2 size={19} /><span>账户与设置</span></button>
         <div className="version">MSync <span>0.2.0</span></div>
       </div>
     </aside>
-    <main className="workspace"><div className="topbar"><div className="breadcrumb">工作空间<ChevronRight size={14} /><strong>{pageTitles[page]}</strong></div><div className="topbar-actions"><span className="device-label">{view.os === 'darwin' ? 'Mac' : view.os === 'win32' ? 'Windows' : 'Linux'} 本机</span><button className="button subtle compact" disabled={busy} onClick={() => run(() => api.exportBackup(), saved => { if (saved) setNotice('备份已导出，不包含登录凭据。'); })}><Download size={15} />导出备份</button></div></div>
+    <main className="workspace"><div className="topbar"><div className="breadcrumb">工作空间<ChevronRight size={14} /><strong>{pageTitles[page]}</strong></div><div className="topbar-actions"><span className="device-label">后台：{view.os === 'darwin' ? 'Mac' : view.os === 'win32' ? 'Windows' : 'Linux'}</span><button className="button subtle compact" disabled={busy} onClick={() => run(() => api.exportBackup(), saved => { if (saved) setNotice('已开始下载备份，不包含登录凭据。'); })}><Download size={15} />导出备份</button></div></div>
       <div className="content">
         {view.demo && <div className="demo-banner"><Play size={15} /><span><strong>离线演示</strong>　当前展示示例收藏，所有操作只影响示例数据。</span><button disabled={busy} onClick={() => update(() => api.demoMode(false))}>退出演示<X size={13} /></button></div>}
         {error && <div role="alert" className="alert error"><AlertCircle size={18} /><span>{error}</span><button className="icon-button" onClick={() => setError('')} aria-label="关闭错误"><X size={15} /></button></div>}
@@ -70,12 +114,12 @@ export default function App() {
         {page === 'apple' && <ApplePage view={view} api={api} busy={busy} update={update} run={run} setPage={setPage} />}
         {page === 'settings' && <SettingsPage view={view} api={api} busy={busy} run={run} update={update} setView={setView} setNotice={setNotice} error={error} />}
       </div>
-      <footer className="statusbar"><span className={busy ? 'status-dot working' : 'status-dot online'} /><span>{busy ? '正在处理，请稍候…' : view.message}</span><span className="statusbar-right">{view.state.mappings.length} 组已确认对应关系</span></footer>
+      <footer className="statusbar"><span className={busy ? 'status-dot working' : 'status-dot online'} /><span>{busy ? `${remoteTask?.state === 'running' ? remoteTask.label : '正在处理'}，请稍候…` : view.message}</span><span className="statusbar-right">{view.state.mappings.length} 组已确认对应关系</span></footer>
     </main>
   </div>;
 }
 function AudioLogo() { return <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg>; }
-type Props = { view: AppView; api: DesktopAPI; busy: boolean; update(work: () => Promise<AppView>): Promise<void>; run<T>(work: () => Promise<T>, after?: (result: T) => void): Promise<void> };
+type Props = { view: AppView; api: AppAPI; busy: boolean; update(work: () => Promise<AppView>): Promise<void>; run<T>(work: () => Promise<T>, after?: (result: T) => void): Promise<void> };
 function PageHeader({ eyebrow, title, description, actions }: { eyebrow: string; title: string; description: string; actions?: ReactNode }) {
   return <div className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div><div className="heading-actions">{actions}</div></div>;
 }
@@ -102,7 +146,7 @@ function LibraryPage({ view, api, busy, run, update, setPage, setView }: Props &
       <div className="list-footer">{items.length} 项{snapshot && !snapshot.isComplete ? ' · 部分可读，未读取的状态保持未知' : snapshot ? ' · 完整扫描' : ' · 等待扫描'}</div>
     </section><aside className="detail-panel">{item ? <><div className="detail-cover"><Cover item={item} size="large" /><span className="floating-platform"><Brand platform={item.platform} small /></span></div><h2>{item.title}</h2><p>{item.artists.join('、')}</p><ItemFacts item={item} /><button className="button primary full" disabled={busy} onClick={() => openSearch(item)}><Link2 size={16} />查找对应版本</button>{item.url && <button className="button subtle full" onClick={() => run(() => api.openExternal(item.url!))}>打开平台页面<ArrowUpRight size={15} /></button>}</> : <><div className="detail-illustration"><Disc3 size={60} /><span><Link2 size={18} /></span></div><h3>每个发行版本，都值得保留。</h3><p>选择一项收藏，核对它在其他平台上的对应版本。</p><div className="principle"><ShieldCheck size={18} /><span>同一专辑与完整发行日期优先。精选集、单曲和重制版分别处理。</span></div></>}</aside></div>
     {searching && <Modal title="查找对应版本" close={() => setSearching(undefined)} wide><div className="modal-intro"><Brand platform={searching.platform} small /><strong>{searching.title}</strong><span>→</span><select aria-label="目标平台" value={target} onChange={event => { setTarget(event.target.value as Platform); setResults([]); }}>{platforms.filter(platform => platform !== searching.platform).map(platform => <option key={platform} value={platform}>{labels[platform]}</option>)}</select><button className="button primary compact" disabled={busy} onClick={() => run(() => api.search(searching, target), setResults)}>查找</button></div>
-      {target === 'appleMusic' && <div className="hint"><Info size={16} /><span>{view.settings.appleMode === 'native' ? '查找本机 Music.app 资料库。缺少的版本需要先在音乐 App 中加入资料库。' : '查找已在“网页确认”中登记的条目。请先登记并核实目标发行版本。'}</span></div>}
+      {target === 'appleMusic' && <div className="hint"><Info size={16} /><span>{view.settings.appleMode === 'native' ? '查找后台电脑的 Music.app 资料库。缺少的版本需要先在音乐 App 中加入资料库。' : '查找已在“网页确认”中登记的条目。请先登记并核实目标发行版本。'}</span></div>}
       <div className="candidate-list">{results.length ? results.map(result => <div className="candidate" key={itemKey(result.item)}><div className="candidate-top"><Cover item={result.item} /><div><strong>{result.item.title}</strong><span>{result.item.release?.title ?? result.item.artists.join('、')}</span></div><span className={`assessment ${result.decision}`}>{result.decision === 'compatible' ? '信息一致' : result.decision === 'different' ? '版本不同' : '需要核实'}</span></div><ItemFacts item={result.item} /><p className="candidate-evidence">{result.evidence.join('；')}</p><button className="button secondary compact" disabled={busy || result.decision === 'different'} onClick={() => { setReview({ source: searching, target: result.item }); setSearching(undefined); }}>核实对应关系<ChevronRight size={14} /></button></div>) : <div className="inline-empty"><Search size={24} /><p>选择目标平台，查找相同发行版本。</p></div>}</div>
     </Modal>}
     {review && <MappingModal source={review.source} target={review.target} busy={busy} close={() => setReview(undefined)} save={mapping => run(() => api.addMapping(mapping), value => { setView(value); setReview(undefined); })} />}
@@ -138,7 +182,7 @@ function PreviewPage({ view, api, busy, run, update, setView, setNotice }: Props
     {!!view.spotifyScanIssues.length && <section className="panel spotify-diagnostics" aria-label="Spotify 异常条目">
       <div className="panel-heading"><div><h2>Spotify 异常条目（{view.spotifyScanIssues.length}）</h2><p>逐项检查缺失信息，收藏状态保持未知</p></div><div className="heading-actions">
         <button className="button secondary compact" disabled={busy} onClick={() => update(() => api.inspectSpotifyIssues())}>检查异常条目详情</button>
-        <button className="button subtle compact" disabled={busy} onClick={() => run(() => api.exportSpotifyDiagnostics(), saved => { if (saved) setNotice('Spotify 诊断已导出，不包含登录凭据。'); })}><Download size={14} />导出 Spotify 诊断</button>
+        <button className="button subtle compact" disabled={busy} onClick={() => run(() => api.exportSpotifyDiagnostics(), saved => { if (saved) setNotice('已开始下载 Spotify 诊断，不包含登录凭据。'); })}><Download size={14} />导出 Spotify 诊断</button>
       </div></div>
       <p className="panel-note">详情检查只读取 Spotify，不修改收藏。导出文件包含下列异常条目的音乐信息与检查结果，不包含 Token、Cookie 或账户资料。</p>
       {view.spotifyScanIssues.map(issue => <div className="spotify-diagnostic-row" key={`${issue.kind}:${issue.position}`}>
@@ -197,12 +241,12 @@ function SettingsPage({ view, api, busy, run, update, setView, setNotice, error 
   const [qrStatus, setQRStatus] = useState('扫码后在手机上确认，再检查登录状态。');
   const settings = () => ({ spotifyClientID: clientID.trim(), appleMode });
   const connected = (platform: Platform): boolean => view.connections.find(connection => connection.platform === platform)?.connected ?? false;
-  return <><PageHeader eyebrow="CONNECTED ACCOUNTS" title="让你的音乐平台连接起来。" description="账户凭据留在本机，收藏对应关系可以单独导出备份。" />
-    {view.credentialStorage === 'session' && <div className="hint"><ShieldCheck size={20} /><span>当前系统安全存储不可用，登录凭据仅在本次运行中保留，关闭应用后需要重新登录。</span></div>}
-    <div className="settings-stack"><section className="panel setting-card"><div className="setting-title"><Brand platform="spotify" /><div><h2>Spotify</h2><p>主要收藏平台 · 官方接口</p></div><span className="connection-tag online">{connected('spotify') ? '已连接' : '等待连接'}</span></div><label className="field">Client ID<input placeholder="粘贴你的 Spotify 应用 Client ID" value={clientID} onChange={event => setClientID(event.target.value)} disabled={busy} /></label><div className="hint"><Info size={16} /><span>在 Spotify Developer Dashboard 创建个人应用，并将回调地址设为 <code>http://127.0.0.1:19428/callback</code>。无需填写 Client Secret。</span></div><div className="setting-actions"><button className="button primary" disabled={busy || view.demo} onClick={() => run(async () => { await api.saveSettings(settings()); return api.connectSpotify(); }, setView)}>{connected('spotify') ? '重新授权' : '连接 Spotify'}<ArrowUpRight size={15} /></button><button className="button subtle" onClick={() => run(() => api.openExternal('https://developer.spotify.com/dashboard'))}>打开 Dashboard<ArrowUpRight size={14} /></button>{connected('spotify') && <button className="button subtle" disabled={busy || view.demo} onClick={() => update(() => api.disconnect('spotify'))}>断开连接</button>}{busy && <button className="button subtle" onClick={() => void api.cancelLogin()}>取消授权等待</button>}</div></section>
+  return <><PageHeader eyebrow="CONNECTED ACCOUNTS" title="让你的音乐平台连接起来。" description="账户凭据留在后台电脑，收藏对应关系可以单独导出备份。" />
+    {view.credentialStorage === 'session' && <div className="hint"><ShieldCheck size={20} /><span>后台系统安全存储不可用，登录凭据仅在本次运行中保留，退出后台后需要重新登录。</span></div>}
+    <div className="settings-stack"><section className="panel setting-card"><div className="setting-title"><div className="setting-symbol"><Globe size={23} /></div><div><h2>网页访问</h2><p>浏览器操作 · 后台处理同步</p></div></div><p className="setting-note">关闭网页后，已提交的任务继续在后台运行。Spotify 授权和 Music.app 操作发生在后台电脑。退出网页访问不会断开音乐平台账户。</p><button className="button secondary" disabled={busy} onClick={() => run(() => api.logoutWebSession())}>退出网页访问</button></section><section className="panel setting-card"><div className="setting-title"><Brand platform="spotify" /><div><h2>Spotify</h2><p>主要收藏平台 · 官方接口</p></div><span className="connection-tag online">{connected('spotify') ? '已连接' : '等待连接'}</span></div><label className="field">Client ID<input placeholder="粘贴你的 Spotify 应用 Client ID" value={clientID} onChange={event => setClientID(event.target.value)} disabled={busy} /></label><div className="hint"><Info size={16} /><span>在 Spotify Developer Dashboard 创建个人应用，并将回调地址设为 <code>http://127.0.0.1:19428/callback</code>。无需填写 Client Secret。首次授权请在后台所在电脑完成，回调地址保持不变。</span></div><div className="setting-actions"><button className="button primary" disabled={busy || view.demo} onClick={() => run(async () => { await api.saveSettings(settings()); return api.connectSpotify(); }, setView)}>{connected('spotify') ? '重新授权' : '连接 Spotify'}<ArrowUpRight size={15} /></button><button className="button subtle" onClick={() => run(() => api.openExternal('https://developer.spotify.com/dashboard'))}>打开 Dashboard<ArrowUpRight size={14} /></button>{connected('spotify') && <button className="button subtle" disabled={busy || view.demo} onClick={() => update(() => api.disconnect('spotify'))}>断开连接</button>}{busy && <button className="button subtle" onClick={() => void api.cancelLogin()}>取消授权等待</button>}</div></section>
     <section className="panel setting-card"><div className="setting-title"><Brand platform="appleMusic" /><div><h2>Apple Music</h2><p>无需付费开发者会员</p></div></div><label className="field">接入方式<select value={appleMode} disabled={busy} onChange={event => setAppleMode(event.target.value as AppView['settings']['appleMode'])}><option value="web">网页确认 · 所有系统可用</option>{view.os === 'darwin' && <option value="native">本机 Music.app · macOS</option>}<option value="disabled">暂不启用</option></select></label><div className="hint"><Info size={18} /><span>{appleMode === 'native' ? '读取和修改 Music.app 资料库内歌曲、专辑的喜爱星标。请先打开音乐 App 并完成资料库同步；首次扫描时允许自动化权限。完整艺人列表和资料库外曲目仍需人工处理。' : '通过系统浏览器完成收藏操作，再在“网页确认”页登记实际状态。此方式不会自动读取 Apple Music 网页。'}</span></div><p className="setting-note">切换接入方式或更换 Apple 账户后，应导出备份并重新建立对应关系与基线。</p><button className="button secondary" disabled={busy} onClick={() => update(() => api.saveSettings(settings()))}>保存接入方式</button></section>
     <section className="panel setting-card"><div className="setting-title"><Brand platform="netease" /><div><h2>网易云音乐</h2><p>扫码连接 · 社区接口</p></div><span className="connection-tag online">{connected('netease') ? '已连接' : '等待连接'}</span></div><p className="setting-note">使用网易云音乐手机 App 扫码并确认。扫码受网易云风控影响，若提示“设备环境异常”，请暂停扫码并按手机页面提示处理。</p><div className="setting-actions"><button className="button secondary" disabled={busy || view.demo} onClick={() => run(() => api.startNeteaseLogin(), result => { setQRStatus('扫码后在手机上确认，再检查登录状态。'); setQR(result); })}>{connected('netease') ? '重新扫码登录' : '生成登录二维码'}</button>{connected('netease') && <button className="button subtle" disabled={busy || view.demo} onClick={() => update(() => api.disconnect('netease'))}>断开连接</button>}</div></section>
-    <section className="panel setting-card"><div className="setting-title"><div className="setting-symbol"><ShieldCheck size={23} /></div><div><h2>本地数据</h2><p>跨设备使用前，请重新连接各平台账户</p></div></div><div className="setting-actions"><button className="button secondary" disabled={busy} onClick={() => run(() => api.exportBackup(), saved => { if (saved) setNotice('已导出备份，不包含账户凭据。'); })}><Download size={15} />导出备份</button><button className="button secondary" disabled={busy} onClick={() => update(() => api.importBackup())}><Upload size={15} />导入备份</button><button className="button subtle danger-text" disabled={busy} onClick={() => update(() => api.resetHistory())}>重新建立基线</button></div></section></div>
+    <section className="panel setting-card"><div className="setting-title"><div className="setting-symbol"><ShieldCheck size={23} /></div><div><h2>后台数据</h2><p>跨设备使用前，请重新连接各平台账户</p></div></div><div className="setting-actions"><button className="button secondary" disabled={busy} onClick={() => run(() => api.exportBackup(), saved => { if (saved) setNotice('已开始下载备份，不包含账户凭据。'); })}><Download size={15} />导出备份</button><button className="button secondary" disabled={busy} onClick={() => update(() => api.importBackup())}><Upload size={15} />导入备份</button><button className="button subtle danger-text" disabled={busy} onClick={() => update(() => api.resetHistory())}>重新建立基线</button></div></section></div>
     {qr && <Modal title="使用网易云音乐 App 扫码" close={() => setQR(undefined)}>
       <div className="qr-panel"><img src={qr.image} width="210" height="210" alt="网易云登录二维码" /><p role="status" aria-live="polite">{qrStatus}</p></div>
       {error && <div className="alert error" role="alert"><AlertCircle size={18} /><span>{error}</span></div>}

@@ -10,7 +10,8 @@ export interface AppView {
   spotifyScanIssues: SpotifyScanIssue[];
 }
 export interface SearchResult { item: MusicItem; decision: 'compatible' | 'different' | 'needsReview'; evidence: string[] }
-export interface DesktopAPI {
+export interface AppAPI {
+  logoutWebSession(): Promise<void>;
   getState(): Promise<AppView>;
   saveSettings(settings: Pick<Settings, 'spotifyClientID' | 'appleMode'>): Promise<AppView>;
   connectSpotify(): Promise<AppView>;
@@ -33,4 +34,8 @@ export interface DesktopAPI {
   demoMode(enabled: boolean): Promise<AppView>;
   simulateDemoChange(platform: Platform, saved: boolean, kind: Kind): Promise<AppView>;
 }
-declare global { interface Window { msync?: DesktopAPI } }
+export interface WebTaskSummary {
+  id: string; label: string; state: 'running' | 'succeeded' | 'failed'; startedAt: string;
+  finishedAt?: string; error?: string;
+}
+export interface WebTask extends WebTaskSummary { value?: unknown }

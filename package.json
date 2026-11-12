@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
-    "build:main": "tsc -p tsconfig.main.json",
+    "build:main": "node scripts/build-main.mjs",
     "build": "npm run typecheck && npm run build:main && vite build",
     "start": "electron .",
     "test": "node scripts/test.mjs",

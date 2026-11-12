@@ -10,6 +10,8 @@ files:
 extraResources:
   - from: resources/music-bridge.js
     to: msync-resources/music-bridge.js
+  - from: resources/tray-icon.png
+    to: msync-resources/tray-icon.png
 mac:
   category: public.app-category.music
   minimumSystemVersion: '15.0'
