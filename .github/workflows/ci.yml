@@ -22,16 +22,10 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Browser and background service integration test
         run: npm run test:ui
-      - name: Package native application directory
-        if: runner.os != 'macOS'
-        run: npx electron-builder --dir --publish never
-      - name: Package Intel and Apple Silicon universal archive
-        if: runner.os == 'macOS'
-        run: npx electron-builder --mac zip --universal --publish never
+      - name: Package portable Node.js service
+        run: node scripts/package.mjs
       - uses: actions/upload-artifact@v4
         with:
-          name: msync-${{ runner.os }}
-          path: |
-            release/*.zip
-            release/*-unpacked/**
-          if-no-files-found: warn
+          name: msync-node-${{ runner.os }}
+          path: release/*-node.tar.gz
+          if-no-files-found: error

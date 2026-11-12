@@ -17,6 +17,6 @@ try {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   if (!ready) throw new Error('开发服务器未启动');
-  backend = spawn(require('electron'), ['.', ...(process.argv.includes('--demo') ? ['--msync-demo'] : [])], { stdio: 'inherit', env: { ...process.env, MSYNC_DEV_URL: 'http://127.0.0.1:5173', MSYNC_WEB_PORT: '19427' } });
+  backend = spawn(process.execPath, ['--env-file-if-exists=.env', 'dist/main/index.js', ...(process.argv.includes('--demo') ? ['--demo'] : [])], { stdio: 'inherit', env: { ...process.env, MSYNC_DEV_URL: 'http://127.0.0.1:5173', MSYNC_WEB_PORT: '19427' } });
   backend.once('exit', code => { cleanup(); process.exitCode = code ?? 0; });
 } catch (error) { cleanup(); console.error(error.message); process.exitCode = 1; }

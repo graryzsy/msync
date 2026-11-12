@@ -7,21 +7,19 @@
   "main": "dist/main/index.js",
   "author": "MSync contributors",
   "license": "UNLICENSED",
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "build:main": "node scripts/build-main.mjs",
     "build": "npm run typecheck && npm run build:main && vite build",
-    "start": "electron .",
+    "start": "node --env-file-if-exists=.env dist/main/index.js",
     "test": "node scripts/test.mjs",
     "test:ui": "playwright test",
     "demo": "tsx src/cli.ts demo",
-    "package:mac": "npm run build && electron-builder --mac dmg zip --universal --publish never",
-    "package:mac:x64": "npm run build && electron-builder --mac dmg zip --x64 --publish never",
-    "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
-    "package:linux": "npm run build && electron-builder --linux AppImage --x64 --publish never",
-    "package:dir": "npm run build && electron-builder --dir --publish never"
+    "package": "npm run build && node scripts/package.mjs"
   },
   "dependencies": {
     "@neteasecloudmusicapienhanced/api": "4.41.1",
@@ -29,7 +27,9 @@
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "sql.js": "1.15.2",
-    "zod": "3.25.76"
+    "zod": "3.25.76",
+    "open": "11.0.4",
+    "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",
@@ -38,10 +38,13 @@
     "@types/react-dom": "^19.2.0",
     "@types/sql.js": "1.4.11",
     "@vitejs/plugin-react": "6.1.2",
-    "electron": "45.2.1",
-    "electron-builder": "26.18.0",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
-    "vite": "8.3.5"
+    "vite": "8.3.5",
+    "@types/proper-lockfile": "4.1.4",
+    "tar": "7.5.23"
+  },
+  "optionalDependencies": {
+    "@napi-rs/keyring": "2.1.2"
   }
 }

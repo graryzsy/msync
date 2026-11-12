@@ -1,10 +1,10 @@
 # MSync
 
-**React 网页前端 + TypeScript 本地同步后台**。界面在系统浏览器中打开；后台继续使用 Electron/Node 运行时，以沿用系统安全存储、Spotify 本机授权和 Music.app 自动化。macOS、Windows、Linux 共享同步核心与平台适配器。SQLite 使用 WebAssembly 实现，没有需要针对 CPU 架构重新编译的数据库插件。
+**React 网页前端 + Node.js / TypeScript 后台**。界面在系统浏览器中打开，后台直接由 Node.js 运行，不依赖 Electron 或桌面应用外壳。macOS、Windows、Linux 共享同步核心与平台适配器。SQLite 使用 WebAssembly 实现，不需要针对 CPU 架构重新编译数据库插件。
 
 以 Spotify 作为首次基准；对已确认对应关系的收藏，识别并传播实际观察到的新增与取消。歌曲点赞、专辑收藏、艺人关注分别记录，保留发行版本与完整发行日期的严格约束。
 
-构建业务代码无需 Swift、Xcode 或付费 Apple Developer 会员。安装包自带后台所需的 Electron/Node 运行时，**部署电脑无需额外安装 Node.js**。前端通过 HTTP 调用后台，不再依赖 Electron 窗口或 preload / IPC。三个音乐平台的接入方式保持原样。
+开发和部署电脑均需安装 **Node.js 24**（最低 22.12）。无需 Swift、完整 Xcode 或付费 Apple Developer 会员。Spotify 官方 API / PKCE、网易云扫码社区接口、Apple Music 本机脚本或网页确认的接入方式保持原样。
 
 ## 平台接入的实际能力
 
@@ -21,7 +21,7 @@ Windows、Linux 没有本机 Music.app 接口，因此提供明确标记的网�
 
 ## 开发与运行
 
-构建电脑安装 **Node.js 24 LTS**（最低 22.12）和 Git；三个系统的命令一致：
+开发电脑安装 Node.js 24 和 Git；三个系统的命令一致：
 
 ```sh
 git clone --branch develop https://github.com/graryzsy/msync.git
@@ -40,7 +40,7 @@ npm start
 npm run dev
 ```
 
-关闭浏览器不会退出后台，已提交的任务会继续；刷新或重新打开网页可以查看后台任务状态。同一时刻只允许一个扫描、同步或设置操作，其他浏览器会显示忙碌状态，防止重复提交。任务状态在本次后台进程内保留，退出后台后请重新扫描。通过托盘菜单打开网页、复制访问链接或退出后台；从终端运行时也可按 `Ctrl+C` 停止。
+关闭浏览器不会退出后台，已提交的任务会继续；刷新或重新打开网页可以查看后台任务状态。同一时刻只允许一个扫描、同步或设置操作，其他浏览器会显示忙碌状态，防止重复提交。任务状态在本次后台进程内保留，退出后台后请重新扫描。在终端按 `Ctrl+C` 停止后台。此版本没有系统托盘或桌面应用菜单。
 
 ## 局域网访问
 
@@ -60,7 +60,7 @@ npm start
 
 其他设备打开 `http://后台电脑的局域网IP:19427`，输入后台终端显示的访问口令。所有浏览器共用后台的同一组账户、收藏状态与同步基线；这是个人工作空间，没有多用户账户隔离。网页适配桌面和窄屏浏览器。
 
-可选环境变量：`MSYNC_WEB_PORT` 设置正式服务端口；`MSYNC_WEB_TOKEN` 设置 24 至 256 字符的固定访问口令，省略时每次启动随机生成。网页会话有效期为 8 小时，重启后台后旧会话失效。托盘复制的访问链接包含初始化会话的口令。
+可选环境变量：`MSYNC_WEB_PORT` 设置正式服务端口；`MSYNC_WEB_TOKEN` 设置 24 至 256 字符的固定访问口令，省略时每次启动随机生成。网页会话有效期为 8 小时，重启后台后旧会话失效。`npm start` 和 `npm run dev` 会读取项目目录的 `.env` 文件（已有进程环境变量优先），也可以通过系统环境变量配置后台。无桌面环境时可设置 `MSYNC_NO_OPEN=1` 禁止自动打开浏览器。
 
 **Spotify 首次授权仍需在后台所在电脑的浏览器完成**，回调地址继续是 `http://127.0.0.1:19428/callback`，无需更改 Developer Dashboard 配置。网易云仍由手机扫描后台生成的二维码并手动检查状态。Apple Music 本机模式操作后台 Mac 的 Music.app，后台电脑需要登录用户会话并允许自动化；从 Windows 浏览器访问 Mac 后台不会改为操作 Windows 上的音乐软件。
 
@@ -76,41 +76,33 @@ npm start
 npm run demo
 ```
 
-## 在 M 系列 Mac 上为 Intel Mac 打包
+## 打包与跨平台部署
 
-通用版合并使用 Apple 的 `lipo` 命令。构建那台 Mac 如果尚未安装 Apple Command Line Tools，先运行 `xcode-select --install`；无需安装完整 Xcode，也无需付费开发者会员。部署目标电脑不需要这些构建工具。
+生成不包含 Node.js 运行时和 `node_modules` 的通用部署包：
 
 ```sh
 npm ci
-npm run package:mac
+npm run package
 ```
 
-Universal 通用版同时包含 `arm64` 与 `x86_64`，可分别部署到 M 系列 macOS 26 和 Intel macOS 15。应用声明最低 macOS **15.0**。只需要 Intel 版本时：
+产物为 `release/msync-0.2.0-node.tar.gz`，包含编译后的后台与网页、Music.app 脚本、`package.json`、准确版本锁文件和使用说明，不包含账户数据与密钥。解压后进入 `msync` 目录，在目标电脑执行：
 
 ```sh
-npm run package:mac:x64
+npm ci --omit=dev
+npm start
 ```
 
-产物在 `release/`。将 `.zip` 中完整的 `MSync.app` 或 `.dmg` 中的应用复制到目标电脑。在 M 系列 Mac 构建不代表已经在 Intel macOS 15 运行验证；目标机器仍应检查启动、Music.app 自动化、钥匙串和真实账户读写。
+macOS、Windows、Linux 可以使用同一个部署包，但目标电脑必须安装与自身系统和 CPU 匹配的 Node.js。M 系列 Mac 构建后可以部署到 Intel macOS 15；目标电脑安装 Intel 版 Node.js，再运行上述依赖安装命令。不要复制构建电脑的 `node_modules`：可选的系统凭据组件由 npm 为目标平台选择预编译版本。
 
-Mac 构建使用个人本地 ad-hoc 签名，不申请付费 Developer ID，也不公证。目标电脑若被 Gatekeeper 拦截，需要在系统设置中确认你自己构建的应用；此配置不代表 App Store 或公开分发所需的签名与公证已经完成。
+不再生成 `.app`、`.dmg`、NSIS 或 AppImage。GitHub Actions 在 Windows、Linux、macOS 上运行测试、构建和浏览器检查，并生成 Node.js 部署包；是否通过以实际工作流结果为准。
 
-## Windows 与 Linux 打包
+## 从旧版迁移
 
-建议在相应系统构建与测试：
+先完全退出旧版后台，再更新代码、执行 `npm ci` 清除旧依赖，并重新构建启动。默认数据目录保持不变，因此收藏、对应关系、网页确认记录和同步历史继续沿用。
 
-```sh
-# Windows x64：NSIS 安装程序
-npm run package:win
+旧的 `credentials.enc` 由旧桌面运行时加密，新版不会读取、覆盖或删除它。**首次切换到 Node.js 版需要重新连接 Spotify 和网易云。** 新版使用独立的 `credentials-node-v1.enc` 保存登录凭据，具体持久化条件见下方说明。
 
-# Linux x64：AppImage
-npm run package:linux
-
-# 当前系统的应用目录，用于本机验证
-npm run package:dir
-```
-
-三个系统不共用同一个后台安装包，但共享 TypeScript 业务代码，前端均由浏览器打开。GitHub Actions 配置 Windows、Linux、macOS 的测试、浏览器与后台集成检查和打包；macOS 作业构建 Universal `.zip`。是否通过以工作流的实际运行结果为准。
+Apple Music 本机脚本保持不变。从终端首次运行新版时，macOS 可能需要重新允许终端 / Node.js 控制 Music.app；请在已登录用户会话中打开 Music.app，完成资料库同步后授权自动化。此处的权限主体与旧桌面应用可能不同。
 
 ## 首次使用
 
@@ -153,9 +145,19 @@ AI 图像辅助尚未接入，不调用收费模型。后续 AI 只能提供候�
 
 ## 数据与安全存储
 
-收藏、映射、历史和删除目标位于 `collections.sqlite`，是标准 SQLite 文件。写入先完成临时文件与 fsync，再替换目标；发现其他进程修改时拒绝覆盖。Electron 限制同一用户目录的多实例运行。
+收藏、映射、历史和删除目标位于 `collections.sqlite`，是标准 SQLite 文件。写入先完成临时文件与 fsync，再替换目标；发现其他进程修改时拒绝覆盖。后台使用数据目录互斥锁，拒绝同一目录启动多个实例，即使监听不同端口也不能绕过。正常退出会释放锁；异常中断后锁最长约 30 秒过期。
 
-凭据通过 Electron `safeStorage` 调用 macOS 钥匙串、Windows 系统加密或 Linux 密钥环，写入 `credentials.enc`。Linux 缺少密钥环或使用 `basic_text` 后端时，**只在内存保留本次登录，不保存明文凭据**。
+登录凭据使用独立的 AES-256-GCM 认证加密，写入 `credentials-node-v1.enc`，不会把密钥写进该文件。默认通过可选的 `@napi-rs/keyring` 组件，把随机加密密钥保存在 macOS 钥匙串、Windows 凭据管理器或 Linux Secret Service 中。Linux 明确要求持久化的 Secret Service，不使用重启即丢失的内核 keyring 作为持久存储。
+
+没有可用的系统凭据存储、可选组件无法加载，或显式设置 `MSYNC_CREDENTIAL_STORE=memory` 时，**登录仅保留在本次后台进程的内存中，不保存明文凭据，也不覆盖已有密文**。界面会显示当前模式。
+
+无系统钥匙串的服务器，可以自行配置固定的 `MSYNC_CREDENTIAL_KEY`，它必须是随机生成的 64 位十六进制密钥。可用以下命令生成一次，再将结果保存在后台环境变量或权限受限的 `.env` 文件中；重启时提供同一个值：
+
+```sh
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+`MSYNC_CREDENTIAL_KEY` 与网页访问口令 `MSYNC_WEB_TOKEN` 不同，不要将后台加密密钥交给浏览器。提供加密密钥时不访问系统钥匙串；`memory` 模式优先于两种持久存储方式。密文损坏、密钥错误或已有密文的系统密钥缺失时会保留原文件，不生成新密钥覆盖。跨电脑迁移后建议重新登录，收藏备份始终不包含登录凭据或密钥。
 
 网页通过 HTTP 接口调用后台，没有 Node.js 访问能力，也不会收到音乐平台的 Token/Cookie。接口校验网页会话、Host、Origin 和专用请求头，拒绝其他网站触发操作；会话 Cookie 使用 HttpOnly 和 SameSite=Strict。静态服务仅提供构建后的网页资源，不提供数据库、凭据文件或源代码。外部链接限制为受支持音乐平台的 HTTPS 页面。备份与诊断通过浏览器下载，导入使用浏览器文件选择并确认替换；重置基线保留确认步骤。
 
@@ -172,12 +174,12 @@ npm run build
 npm run test:ui
 ```
 
-首次运行浏览器测试先执行 `npx playwright install chromium`。测试会启动实际的 Electron 后台和独立 Chromium 浏览器，使用临时数据目录和离线演示；扫码、异常数据使用测试夹具，不访问真实音乐账户。Linux 后台使用无显示器的 Ozone 模式。设置 `MSYNC_CHROMIUM_EXECUTABLE` 可使用已安装的 Chromium；设置 `MSYNC_ELECTRON_EXECUTABLE` 可对已打包后台运行相同测试。
+首次运行浏览器测试先执行 `npx playwright install chromium`。测试会启动实际的 Node.js 后台和独立 Chromium 浏览器，使用临时数据目录、内存凭据和离线演示；扫码、异常数据使用测试夹具，不访问真实音乐账户或系统钥匙串。设置 `MSYNC_CHROMIUM_EXECUTABLE` 可使用已安装的 Chromium；设置 `MSYNC_NODE_ENTRY` 可对解压部署包中的 `dist/main/index.js` 运行相同浏览器测试。
 
 ```text
 src/core/        共享模型、严格匹配、计划、SQLite 与执行协调
 src/adapters/    Spotify / 网易云 / Apple Music 接入
-src/main/        本地后台启动、系统托盘、既有控制器与凭据存储
+src/main/        Node.js 后台启动、目录锁、控制器、独立加密与系统密钥访问
 src/server/      HTTP 接口、网页会话、静态资源与后台任务
 src/renderer/    React 网页、HTTP 客户端与浏览器文件操作
 src/shared/      网页与后台接口、任务类型、外链校验
